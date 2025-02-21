@@ -15,6 +15,7 @@ from torchmetrics.classification import BinaryAccuracy, BinaryAUROC, BinaryPreci
 from torchmetrics.classification import MulticlassAccuracy
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+from sklearn.metrics import roc_curve, auc, roc_auc_score, precision_recall_fscore_support
 
 
 def train(args):
@@ -46,7 +47,8 @@ def train(args):
         feat_extraction_config = yaml.safe_load(file)
 
     print('Running {} folds total'.format(args.k_folds))
-    for fold, train_loader, val_loader, class_weights in get_dataloaders(dataset, k_folds=args.k_folds, batch_size=args.batch_size):
+    for fold, train_loader, val_loader, class_weights in get_dataloaders(dataset, k_folds=args.k_folds,
+                                                                         batch_size=args.batch_size):
         fold_dir = os.path.join(args.exp_dir, '{}_fold_{}'.format(args.run_name, fold))
         os.makedirs(fold_dir, exist_ok=True)
 
@@ -97,8 +99,10 @@ def train(args):
         print('Best model for fold {} saved at: {}'.format(fold, best_model_path))
         best_model = MILModel.load_from_checkpoint(best_model_path,
                                                    feature_dim=feat_extraction_config['model']['feature_dim'],
+                                                   hidden_dim=args.hidden_dim,
                                                    run_dir=fold_dir,
-                                                   binary=args.binary)
+                                                   binary=args.binary,
+                                                   class_weights=class_weights)
 
         best_model.final_validation = True
         trainer.validate(best_model, dataloaders=val_loader)
@@ -121,7 +125,10 @@ class MILModel(pl.LightningModule):
 
         super(MILModel, self).__init__()
         self.output_dim = 1 if binary else 3
-        self.model = AttentionMIL(feature_dim, hidden_dim, output_dim=self.output_dim, drop_out=drop_out)
+        self.model = AttentionMIL(feature_dim=feature_dim,
+                                  hidden_dim=hidden_dim,
+                                  output_dim=self.output_dim,
+                                  drop_out=drop_out)
         self.lr = lr
         self.wd = wd
 
@@ -155,7 +162,7 @@ class MILModel(pl.LightningModule):
         self.run_dir = run_dir
 
     def forward(self, bag_features, mask):
-        logits, attn_weights = self.model(bag_features, mask)
+        logits, attn_weights = self.model(bag_features.to(torch.float32), mask)
         return logits.squeeze(0), attn_weights
 
     def compute_loss(self, logits, labels, masks):
@@ -194,10 +201,10 @@ class MILModel(pl.LightningModule):
         # Store predictions if final validation
         if self.final_validation:
 
-            if self.output_dim == 1:               # binary
+            if self.output_dim == 1:  # binary
                 probs = torch.sigmoid(logits)
                 preds = probs > 0.5
-            else:                                  # multiclass
+            else:  # multiclass
                 probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
 
@@ -218,19 +225,47 @@ class MILModel(pl.LightningModule):
     def compute_confusion_matrix(self, preds, labels):
         """Generate and log confusion matrix"""
         conf_mat = self.conf_matrix(preds, labels).cpu().numpy()
-        plt.figure(figsize=(5, 5))
-        sns.heatmap(conf_mat, annot=True, fmt="d", cmap="Blues", xticklabels=self.class_labels, yticklabels=self.class_labels)
+        plt.figure(figsize=(7, 7))
+        sns.heatmap(conf_mat, annot=True, fmt="d", cmap="Blues", xticklabels=self.class_labels,
+                    yticklabels=self.class_labels)
         plt.xlabel("Predicted")
         plt.ylabel("Actual")
         plt.title("Validation Confusion Matrix")
         wandb.log({"Confusion Matrix": wandb.Image(plt)})
+        plt.savefig(os.path.join(self.run_dir, 'confusion_matrix.png'))
+        plt.close()
+
+    def compute_per_class_metrics(self, preds, probs, labels):
+        # compute auc per class
+        auc_per_class = []
+        for i in range(len(self.class_labels)):
+            binary_true = (labels == i).astype(int)
+            auc_score = roc_auc_score(binary_true, probs[:, i])
+            auc_per_class.append(auc_score)
+
+        # compute precision recall and f1 per class
+        precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average=None)
+        return auc_per_class, precision, recall, f1
+
+    def compute_roc_curve(self, labels, probs):
+        fpr, tpr, _ = roc_curve(labels, probs)
+        roc_auc = auc(fpr, tpr)
+        plt.figure(figsize=(7, 7))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic')
+        plt.legend(loc='lower right')
+        wandb.log({"ROC Curve": wandb.Image(plt)})
+        plt.savefig(os.path.join(self.run_dir, 'roc_curve.png'))
         plt.close()
 
     def on_validation_epoch_end(self):
         """Compute confusion matrix only at final validation round"""
         if self.final_validation:
             preds = torch.cat(self.val_preds)
-            probs = torch.cat(self.val_probs).cpu().numpy()
+            probs = torch.cat(self.val_probs)
             labels = torch.cat(self.val_labels)
             block_ids = [item for tup in self.val_block_ids for item in tup]
             print('Final evaluation on: {} samples'.format(len(preds)))
@@ -240,12 +275,24 @@ class MILModel(pl.LightningModule):
             results_df = pd.DataFrame({'block_id': block_ids,
                                        'label': labels.cpu().numpy(),
                                        'pred': preds.cpu().numpy()})
-            if self.output_dim == 1:
-                results_df['prob'] = probs
-            else:
-                results_df['prob_nd'] = probs[:, 0]
-                results_df['prob_lgd'] = probs[:, 1]
-                results_df['prob_hgd'] = probs[:, 2]
+
+            if self.output_dim == 1:  # binary
+                results_df['prob'] = probs.cpu().numpy()
+                self.compute_roc_curve(labels.cpu().numpy().astype(int), probs.cpu().numpy())
+            else:  # multi-class
+                auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
+                                                                                      probs=probs.cpu().numpy(),
+                                                                                      labels=labels.cpu().numpy())
+
+                for i, class_n in enumerate(self.class_labels):
+                    self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
+                    self.log('final_val_{}_precision'.format(class_n), precision[i])
+                    self.log('final_val_{}_recall'.format(class_n), recall[i])
+                    self.log('final_val_{}_f1'.format(class_n), f1[i])
+
+                results_df['prob_nd'] = probs[:, 0].cpu().numpy()
+                results_df['prob_lgd'] = probs[:, 1].cpu().numpy()
+                results_df['prob_hgd'] = probs[:, 2].cpu().numpy()
 
             print(results_df)
             results_save_path = os.path.join(self.run_dir, 'results.csv')
@@ -258,12 +305,12 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='baseline_CONCH', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='baseline_virchow2', help="the name of this experiment")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_multiclass', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
-    parser.add_argument("--nr_epochs", type=int, default=2500, help="the number of epochs")
+    parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
-    parser.add_argument("--hidden_dim", type=int, default=512, help="hidden dimension")
+    parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
     parser.add_argument("--lr", type=float, default=1e-5, help="initial the learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay (L2)")
     parser.add_argument("--drop_out", type=float, default=0.0, help="drop out rate")
@@ -271,7 +318,7 @@ if __name__ == '__main__':
     parser.add_argument("--exp_dir", type=str,
                         default='/home/mbotros/experiments/lans_weaklysupervised/')
     parser.add_argument("--features_dir", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS_features/CONCH')
+                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow2')
     parser.add_argument("--label_file", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS/lans_consensus_no_ind_nbde=0_lgd=1_hgd=2.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
