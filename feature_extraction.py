@@ -11,20 +11,17 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import timm
 from timm.data import resolve_data_config
-from timm.data.transforms_factory import create_transform
 from timm.layers import SwiGLUPacked
 from huggingface_hub import login
 import argparse
-from models import ConvStem
 from PIL import Image, ImageDraw
-from conch.open_clip_custom import create_model_from_pretrained
 
 
 def extract_rois(wsi, wsa, margin=1000):
     """ Extracts ROIs from a whole slide annotation. Should be able to extract multiple ROI's from one annotation xml.
     Todo: Verify that rois don't cross the bounds of the slide. Is the margin necessary?
 
-    Parameters:
+    Args:
         wsi: WsiImage
         wsa: WsiAnnotation
         margin: amount of space (in pixels) between the ROI and each of the borders of the image
@@ -86,8 +83,18 @@ def extract_features(sample, model_name, target_mpp=1, tile_size=(224, 224), til
 
     # make the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, preprocess = create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch")
+
+    # need to specify MLP layer and activation function for proper init
+    model = timm.create_model(model_name,
+                              pretrained=True,
+                              mlp_layer=SwiGLUPacked,
+                              act_layer=torch.nn.SiLU)
+
     model = model.eval().to(device)
+
+    # get model specific transforms (normalization, resize)
+    data_config = timm.data.resolve_model_data_config(model)
+    transforms = timm.data.create_transform(**data_config, is_training=False)
 
     # extract rois + dataset
     rois = extract_rois(wsi, wsa)
@@ -101,18 +108,24 @@ def extract_features(sample, model_name, target_mpp=1, tile_size=(224, 224), til
                                                    mask=wsm)
     # extract coordinates and features
     coords = [np.array(d["coordinates"]) for d in dataset]
-    patches_tensor = torch.stack([preprocess(d['image'].convert('RGB')) for d in dataset])
+    patches_tensor = torch.stack([transforms(d['image'].convert('RGB')) for d in dataset])
     tensor_dataset = TensorDataset(patches_tensor)
     dataloader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=False)
 
-    with torch.inference_mode():
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
 
         embeddings = []
         for x in dataloader:
 
-            image = x[0].to(device)
-            image_embedding = model.encode_image(image, proj_contrast=False, normalize=False)
-            embeddings.append(image_embedding)
+            output = model(x[0].to(device))           # size: 1 x 261 x 1280
+
+            class_token = output[:, 0]                # size: 1 x 1280
+            patch_tokens = output[:, 5:]              # size: 1 x 256 x 1280, tokens 1-4 are register tokens, ignore those
+
+            # concatenate class token and average pool of patch tokens
+            embedding = torch.cat([class_token, patch_tokens.mean(1)], dim=-1)  # size: 1 x 2560
+            embedding = embedding.to(torch.float16)
+            embeddings.append(embedding)
 
         feats = torch.cat(embeddings, dim=0)
         print('Features shape: {}\n'.format(feats.shape))
@@ -136,9 +149,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default='/data/archief/AMC-data/Barrett/LANS/')
-    parser.add_argument("--output_path", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/CONCH/')
+    parser.add_argument("--output_path", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/Virchow2/')
     parser.add_argument("--config_file", type=str,
-                        default='/home/mbotros/code/lans_weaksupervised/configs/extract_config_conch.yaml')
+                        default='/home/mbotros/code/lans_weaksupervised/configs/extract_config_virchow.yaml')
     args = parser.parse_args()
 
     # make file dataset
@@ -152,6 +165,8 @@ if __name__ == '__main__':
     print('Saving features to: {}'.format(args.output_path))
     os.makedirs(args.output_path, exist_ok=True)
     shutil.copy(args.config_file, args.output_path)
+
+    login()
 
     # start extraction
     for sample in lans_file_dataset:

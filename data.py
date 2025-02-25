@@ -10,7 +10,18 @@ from sklearn.utils.class_weight import compute_class_weight
 
 
 def filter_image_files(image_files):
+    """  Filters and selects representative image files for each unique block identifier.
+    Ensures that only one file per block is returned, currently just the first available match
 
+     Args:
+        image_files (list of Path): List of file paths to image files.
+
+    Returns:
+        Tuple[list, list]:
+            - block_identifiers (list of str): List of unique block identifiers.
+            - files (list of Path): List of selected image file paths, one per block.
+
+    """
     # get all blocks identifiers
     block_ids = sorted(list(set([str(f).split('/')[-1].split('HE')[0] for f in image_files])))
     block_identifiers = []
@@ -27,7 +38,7 @@ def filter_image_files(image_files):
 
 class LANSFileDataset:
     """
-    A file dataset class used to extract features from a set of WSIs.
+    A file dataset class used to keep track of the associated files in the LANS dataset.
     """
 
     def __init__(self, data_dir):
@@ -67,17 +78,15 @@ class BagDataset:
     """
     def __init__(self, features_dir, label_file, binary=False):
         """
-         Initializes the BagDataset object by loading the features, coordinates, and labels from the
-         specified directory and label file.
+        Initializes the BagDataset object by loading features, coordinates, and labels
+        from the specified directory and label file.
 
-         Parameters:
-         ----------
-         features_dir : str
-             Directory containing `.pt` and `.npy` files with WSI features and patch coordinates, respectively.
-         label_file : str
-             Path to the CSV file containing labels.
-        binary : bool
-             Whether to consider a binary setting (nondysplastic vs dysplastic)
+        Args:
+            features_dir (str): Path to the directory containing `.pt` files with WSI features and `.npy` files
+                with patch coordinates.
+            label_file (str): Path to the CSV file containing the labels for each WSI or block.
+            binary (bool, optional): Whether to use a binary classification setting (e.g., non-dysplastic vs dysplastic).
+                If `True`, labels will be binarized. Default is `False`.
         """
 
         # all files and all labels
@@ -94,9 +103,7 @@ class BagDataset:
         self.coordinates = [np.load(os.path.join(features_dir, b + '-coords.npy')) for b in self.block_ids]
 
         # convert grades to tensors
-        self.labels = [
-            torch.tensor(self.labels[self.labels['block id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids
-        ]
+        self.labels = [torch.tensor(self.labels[self.labels['block id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids]
 
         if binary:
             self.labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in self.labels]
@@ -106,10 +113,17 @@ class BagDataset:
 
     def __getitem__(self, idx):
         """
+        Retrieves a single sample from the dataset.
+
+        Args:
+            idx (int): Index of the sample to retrieve.
+
         Returns:
-        - features: Tensor of shape (num_patches, feature_dim).
-        - label: Tensor containing the label for the WSI.
-        - coordinates: Numpy array of shape (num_patches, 2)
+            Tuple[torch.Tensor, torch.Tensor, np.ndarray, str]:
+                - features (torch.Tensor): Tensor of shape (num_patches, feature_dim)
+                - label (torch.Tensor): Tensor of shape (num_patches, 1) containing the label for the corresponding WSI.
+                - coordinates (np.ndarray): Array of shape (num_patches, 2) representing the (x, y) coordinates of each patch.
+                - block_id (str): Identifier for the block, useful for tracking the source of each bag.
         """
         features = self.features[idx]
         label = self.labels[idx]
@@ -141,23 +155,36 @@ def collate_fn(batch):
 
 
 def get_class_weights(dataset):
-    labels = [label.item() for _, label, _, _ in dataset]
-    class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
-    return torch.tensor(class_weights, dtype=torch.float)
-
-
-def get_dataloaders(dataset, k_folds=5, batch_size=4):
-    """ Splits the data for KFold cross validation
-    todo: assure split on case level: how?
+    """
+    Computes class weights for handling imbalanced datasets.
 
     Args:
-        dataset:
-        k_folds:
-        batch_size:
+        dataset (torch.utils.data.Dataset): The dataset from which to compute class weights.
+
     Returns:
-         fold:
-         train_loader:
-         val_loader:
+        class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
+    """
+    labels = [label.item() for _, label, _, _ in dataset]
+    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels), dtype=torch.float)
+    return class_weights
+
+
+def get_dataloaders(dataset, k_folds=5, batch_size=32):
+    """ Splits the dataset into training and validation sets using K-Fold cross-validation
+    and returns corresponding DataLoaders for each fold.
+
+    Args:
+        dataset (torch.utils.data.Dataset): The full dataset to be split.
+        k_folds (int, optional): Number of folds for cross-validation. Default is 5.
+        batch_size (int, optional): Batch size for the DataLoaders. Default is 32.
+
+    Returns:
+         Generator[Tuple[int, DataLoader, DataLoader, torch.Tensor]]: A generator yielding:
+            - fold (int): The current fold number (starting at 1).
+            - train_loader (DataLoader): DataLoader for the training subset.
+            - val_loader (DataLoader): DataLoader for the validation subset.
+            - class_weights (torch.Tensor): Class weights computed from the training subset.
+
     """
     kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
 

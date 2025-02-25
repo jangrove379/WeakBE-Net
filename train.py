@@ -1,5 +1,5 @@
 import argparse
-from models import AttentionMIL
+from aggregators.abmil import AttentionMIL
 import seaborn as sns
 import wandb
 import yaml
@@ -20,16 +20,12 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score, precision_recall_fsco
 
 def train(args):
     """
-    - Binary pipeline
-    (*) At the end of training run on validation set and store:
-    (*)   * ROC plot
-     - Data prep
+    - Data
     (*) Split: (1) make a file for training (till RL-0950) that marks the SKMS cases to be removed
     (*) Split: (2) split on case level
     (*) Add cases: RL-0927 till RL-0950 (also extract tissue masks => do for the whole dataset while at it)
     (*) Use Ylva's label file instead
     - Feature extraction
-    (*) Extract other features with FOMO models: (1) Conch, (2) Virchow2
     (*) Try other spacings: 0.5 mpp and 2 mpp
     """
     dataset = BagDataset(
@@ -305,10 +301,10 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='baseline_virchow2', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='baseline_virchow2_test-5', help="the name of this experiment")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_multiclass', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
-    parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
+    parser.add_argument("--nr_epochs", type=int, default=100, help="the number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
     parser.add_argument("--lr", type=float, default=1e-5, help="initial the learning rate")
