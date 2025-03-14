@@ -28,6 +28,8 @@ def train(args):
     - Feature extraction
     (*) Try other spacings: 0.5 mpp and 2 mpp
     """
+    pl.seed_everything(args.seed)
+
     dataset = BagDataset(
         features_dir=args.features_dir,
         label_file=args.label_file,
@@ -42,9 +44,15 @@ def train(args):
     with open(os.path.join(args.features_dir, 'extract_config.yaml')) as file:
         feat_extraction_config = yaml.safe_load(file)
 
+    # log best
+    best_auc_scores = []
+    best_acc_scores = []
+
     print('Running {} folds total'.format(args.k_folds))
-    for fold, train_loader, val_loader, class_weights in get_dataloaders(dataset, k_folds=args.k_folds,
-                                                                         batch_size=args.batch_size):
+    for fold, train_loader, val_loader, class_weights in get_dataloaders(dataset,
+                                                                         k_folds=args.k_folds,
+                                                                         batch_size=args.batch_size,
+                                                                         seed=args.seed):
         fold_dir = os.path.join(args.exp_dir, '{}_fold_{}'.format(args.run_name, fold))
         os.makedirs(fold_dir, exist_ok=True)
 
@@ -101,8 +109,16 @@ def train(args):
                                                    class_weights=class_weights)
 
         best_model.final_validation = True
-        trainer.validate(best_model, dataloaders=val_loader)
+        results = trainer.validate(best_model, dataloaders=val_loader)
+
+        auc_metric = 'final_val_auc' if args.binary else 'final_val_NDBE_auc'
+        best_auc_scores.append(results[0][auc_metric])
+        best_acc_scores.append(results[0]['final_val_accuracy'])
         run.finish()
+
+    # print average over folds
+    print(f"AUC: {np.mean(best_auc_scores):.2f} ± {np.std(best_auc_scores):.2f}")
+    print(f"Accuracy: {np.mean(best_acc_scores):.2f} ± {np.std(best_acc_scores):.2f}")
 
 
 class MILModel(pl.LightningModule):
@@ -301,10 +317,11 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='baseline_virchow2_test-5', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='testi123-hep53', help="the name of this experiment")
+    parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_multiclass', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
-    parser.add_argument("--nr_epochs", type=int, default=100, help="the number of epochs")
+    parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
     parser.add_argument("--lr", type=float, default=1e-5, help="initial the learning rate")
@@ -314,7 +331,7 @@ if __name__ == '__main__':
     parser.add_argument("--exp_dir", type=str,
                         default='/home/mbotros/experiments/lans_weaklysupervised/')
     parser.add_argument("--features_dir", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow2')
+                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53')
     parser.add_argument("--label_file", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS/lans_consensus_no_ind_nbde=0_lgd=1_hgd=2.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")

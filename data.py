@@ -9,21 +9,23 @@ import torch.nn.functional as F
 from sklearn.utils.class_weight import compute_class_weight
 
 
-def filter_image_files(image_files):
+def filter_image_files(image_files, stain='HE'):
     """  Filters and selects representative image files for each unique block identifier.
     Ensures that only one file per block is returned, currently just the first available match
 
      Args:
         image_files (list of Path): List of file paths to image files.
+        stain (str): the staining type (HE or P53)
 
     Returns:
         Tuple[list, list]:
             - block_identifiers (list of str): List of unique block identifiers.
             - files (list of Path): List of selected image file paths, one per block.
 
+
     """
     # get all blocks identifiers
-    block_ids = sorted(list(set([str(f).split('/')[-1].split('HE')[0] for f in image_files])))
+    block_ids = sorted(list(set([str(f).split('/')[-1].split(stain)[0] for f in image_files])))
     block_identifiers = []
     files = []
 
@@ -41,22 +43,23 @@ class LANSFileDataset:
     A file dataset class used to keep track of the associated files in the LANS dataset.
     """
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, stain='HE'):
 
         # location of data
         self.data_dir = data_dir
+        self.stain = stain
 
         # load the images
-        self.image_files = [f for f in sorted(data_dir.rglob("*.tiff")) if 'HE' in str(f) and 'tm' not in str(f)]
+        self.image_files = [f for f in sorted(data_dir.rglob("*.tiff")) if self.stain in str(f) and 'tm' not in str(f)]
 
         # only take the first file for each block identifier (otherwise we process so much)
-        self.block_identifiers, self.image_files = filter_image_files(self.image_files)
+        self.block_identifiers, self.image_files = filter_image_files(self.image_files, stain=stain)
 
         # get the corresponding annotation and mask files
         self.annotation_files = [str(f).split('.')[0] + '.xml' for f in self.image_files]
         self.mask_files = [str(f).split('.')[0] + '_tm.tiff' for f in self.image_files]
 
-        print('Selected {} H&E image files!'.format(len(self.image_files)))
+        print('Selected {} {} image files!'.format(len(self.image_files), self.stain))
         # check if all annotations and masks are present before continue
         for f in self.annotation_files:
             assert (Path(f).exists()), 'Annotation missing: {}'.format(f)
@@ -90,20 +93,37 @@ class BagDataset:
         """
 
         # all files and all labels
-        self.feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f])
-        self.coord_files = sorted([f for f in os.listdir(features_dir) if '.npy' in f])
+        self.HE_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'HE' in f])
+        self.P53_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'P53' in f])
+        self.coord_files = sorted([f for f in os.listdir(features_dir) if '.npy' in f and 'HE' in f])
         self.labels = pd.read_csv(label_file)
 
         # filter out where we don't have both a file and a label
-        block_id_files = [f.split('-features')[0] for f in self.feature_files]
+        block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
         self.block_ids = [x for x in self.labels['block id'] if x in block_id_files]
 
-        # open the files & load the grades
-        self.features = [torch.load(os.path.join(features_dir, b + '-features.pt')) for b in self.block_ids]
-        self.coordinates = [np.load(os.path.join(features_dir, b + '-coords.npy')) for b in self.block_ids]
+        self.features = []
+        self.p53_available = []
 
+        for block_id in self.block_ids:
+
+            he_features = torch.load(os.path.join(features_dir, block_id + 'HE-features.pt'))
+
+            # check if p53 features are available for this block
+            matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
+
+            if matching_p53:
+                p53_features = torch.load(os.path.join(features_dir, matching_p53))
+                stack = torch.cat([he_features, p53_features], dim=0)
+                self.features.append(stack)
+                self.p53_available.append(block_id)
+            else:
+                self.features.append(he_features)
+
+        print('{} of which {} have p53 features'.format(len(self.block_ids), len(self.p53_available)))
         # convert grades to tensors
         self.labels = [torch.tensor(self.labels[self.labels['block id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids]
+        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
 
         if binary:
             self.labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in self.labels]
@@ -169,7 +189,7 @@ def get_class_weights(dataset):
     return class_weights
 
 
-def get_dataloaders(dataset, k_folds=5, batch_size=32):
+def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
     """ Splits the dataset into training and validation sets using K-Fold cross-validation
     and returns corresponding DataLoaders for each fold.
 
@@ -177,6 +197,7 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32):
         dataset (torch.utils.data.Dataset): The full dataset to be split.
         k_folds (int, optional): Number of folds for cross-validation. Default is 5.
         batch_size (int, optional): Batch size for the DataLoaders. Default is 32.
+        seed (int, optional): Seed for drawing samples.
 
     Returns:
          Generator[Tuple[int, DataLoader, DataLoader, torch.Tensor]]: A generator yielding:
@@ -186,7 +207,7 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32):
             - class_weights (torch.Tensor): Class weights computed from the training subset.
 
     """
-    kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+    kfold = KFold(n_splits=k_folds, shuffle=True, random_state=seed)
 
     for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
         fold = fold + 1

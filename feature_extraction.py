@@ -149,13 +149,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default='/data/archief/AMC-data/Barrett/LANS/')
-    parser.add_argument("--output_path", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/Virchow2/')
+    parser.add_argument("--output_path", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53/')
     parser.add_argument("--config_file", type=str,
                         default='/home/mbotros/code/lans_weaksupervised/configs/extract_config_virchow.yaml')
     args = parser.parse_args()
-
-    # make file dataset
-    lans_file_dataset = LANSFileDataset(Path(args.data_path))
 
     # load config for extraction
     with open(args.config_file) as file:
@@ -166,22 +163,38 @@ if __name__ == '__main__':
     os.makedirs(args.output_path, exist_ok=True)
     shutil.copy(args.config_file, args.output_path)
 
+    # hugging face token required
     login()
 
-    # start extraction
-    for sample in lans_file_dataset:
-        features, coordinates, thumbnail = extract_features(sample,
-                                                            model_name=config['model']['name'],
-                                                            target_mpp=config['data']['target_mpp'],
-                                                            tile_size=config['data']['tile_size'],
-                                                            tile_overlap=config['data']['tile_overlap'],
-                                                            batch_size=config['data']['batch_size'])
+    lans_he_dataset = LANSFileDataset(Path(args.data_path), stain='HE')
+    lans_p53_dataset = LANSFileDataset(Path(args.data_path), stain='P53')
 
-        # store the features and coordinates
-        block_id = sample[-1]
-        coord_file = os.path.join(args.output_path, block_id + '-coords.npy')
-        feat_file = os.path.join(args.output_path, block_id + '-features.pt')
-        thumb_file = os.path.join(args.output_path, block_id + '-thumb.png')
-        thumbnail.save(thumb_file, optimize=True, quality=95)
-        np.save(file=coord_file, arr=coordinates)
-        torch.save(obj=features, f=feat_file)
+    for dataset in [lans_he_dataset, lans_p53_dataset]:
+
+        stain = dataset.stain
+        print('Starting with features from {}'.format(stain))
+
+        # start extraction
+        for sample in dataset:
+            try:
+                features, coordinates, thumbnail = extract_features(
+                    sample,
+                    model_name=config['model']['name'],
+                    target_mpp=config['data']['target_mpp'],
+                    tile_size=config['data']['tile_size'],
+                    tile_overlap=config['data']['tile_overlap'],
+                    batch_size=config['data']['batch_size']
+                )
+
+                # Store the features and coordinates
+                block_id = sample[-1]
+                coord_file = os.path.join(args.output_path, f"{block_id}-{stain}-coords.npy")
+                feat_file = os.path.join(args.output_path, f"{block_id}-{stain}-features.pt")
+                thumb_file = os.path.join(args.output_path, f"{block_id}-{stain}-thumb.png")
+
+                thumbnail.save(thumb_file, optimize=True, quality=95)
+                np.save(coord_file, coordinates)
+                torch.save(features, feat_file)
+
+            except Exception as e:
+                print(f"Error processing sample {sample}: {e}")
