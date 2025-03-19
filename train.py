@@ -1,38 +1,37 @@
 import argparse
-from aggregators.abmil import AttentionMIL
-import seaborn as sns
-import wandb
-import yaml
 import os
-import pandas as pd
-from matplotlib import pyplot as plt
-from data import BagDataset, get_dataloaders
+import yaml
+
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
-from torchmetrics.classification import BinaryAccuracy, BinaryAUROC, BinaryPrecision, BinaryRecall, ConfusionMatrix
-from torchmetrics.classification import MulticlassAccuracy
+import wandb
+import matplotlib.pyplot as plt
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-from sklearn.metrics import roc_curve, auc, roc_auc_score, precision_recall_fscore_support
+from sklearn.metrics import (
+    roc_curve, auc, roc_auc_score,
+    precision_recall_fscore_support, accuracy_score
+)
+from torchmetrics.classification import (
+    BinaryAccuracy, BinaryAUROC, BinaryPrecision,
+    BinaryRecall, ConfusionMatrix, MulticlassAccuracy
+)
+
+from aggregators.abmil import AttentionMIL
+from data import BagDataset, get_dataloaders
 
 
 def train(args):
-    """
-    - Data
-    (*) Split: (1) make a file for training (till RL-0950) that marks the SKMS cases to be removed
-    (*) Split: (2) split on case level
-    (*) Add cases: RL-0927 till RL-0950 (also extract tissue masks => do for the whole dataset while at it)
-    (*) Use Ylva's label file instead
-    - Feature extraction
-    (*) Try other spacings: 0.5 mpp and 2 mpp
-    """
     pl.seed_everything(args.seed)
 
     dataset = BagDataset(
         features_dir=args.features_dir,
         label_file=args.label_file,
+        use_p53=args.use_p53,
         binary=args.binary)
 
     print('Total length dataset: {}'.format(len(dataset)))
@@ -210,27 +209,23 @@ class MILModel(pl.LightningModule):
         logits, _ = self(bag_features, masks)
         loss = self.compute_loss(logits, labels, masks)
 
+        if self.output_dim == 1:  # binary
+            probs = torch.sigmoid(logits)
+            preds = probs > 0.5
+        else:  # multiclass
+            probs = torch.softmax(logits, dim=1)
+            preds = torch.argmax(probs, dim=1)
+
         # Store predictions if final validation
         if self.final_validation:
-
-            if self.output_dim == 1:  # binary
-                probs = torch.sigmoid(logits)
-                preds = probs > 0.5
-            else:  # multiclass
-                probs = torch.softmax(logits, dim=1)
-                preds = torch.argmax(probs, dim=1)
-
             self.val_probs.append(probs)
             self.val_preds.append(preds)
             self.val_labels.append(labels)
             self.val_block_ids.append(block_ids)
-
-            for name, metric in self.metrics.items():
-                self.log('final_val_{}'.format(name), metric(logits, labels), on_epoch=True)
         else:
             self.log('val_loss', loss, prog_bar=True)
             for name, metric in self.metrics.items():
-                self.log('val_{}'.format(name), metric(logits, labels), prog_bar=True, on_epoch=True)
+                self.log('val_{}'.format(name), metric(preds, labels), prog_bar=True, on_epoch=True)
 
         return loss
 
@@ -291,7 +286,9 @@ class MILModel(pl.LightningModule):
             if self.output_dim == 1:  # binary
                 results_df['prob'] = probs.cpu().numpy()
                 self.compute_roc_curve(labels.cpu().numpy().astype(int), probs.cpu().numpy())
+                self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
             else:  # multi-class
+                self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
                 auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
                                                                                       probs=probs.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
@@ -317,10 +314,11 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='testi123-hep53', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='new_sheet_test-2', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_multiclass', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
+    parser.add_argument("--use_p53", type=bool, default=True, help="whether use p53 features if available")
     parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
@@ -333,7 +331,7 @@ if __name__ == '__main__':
     parser.add_argument("--features_dir", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53')
     parser.add_argument("--label_file", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS/lans_consensus_no_ind_nbde=0_lgd=1_hgd=2.csv')
+                        default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True)
     args = parser.parse_args()

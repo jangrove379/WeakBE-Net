@@ -1,11 +1,12 @@
-from pathlib import Path
-import pandas as pd
 import os
-import torch
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import KFold
-import torch.nn.functional as F
 from sklearn.utils.class_weight import compute_class_weight
 
 
@@ -79,7 +80,7 @@ class BagDataset:
     along with their corresponding labels and spatial coordinates. Each WSI (bag) consists of multiple
     instances (patch-level features).
     """
-    def __init__(self, features_dir, label_file, binary=False):
+    def __init__(self, features_dir, label_file, use_p53, binary=False):
         """
         Initializes the BagDataset object by loading features, coordinates, and labels
         from the specified directory and label file.
@@ -88,6 +89,7 @@ class BagDataset:
             features_dir (str): Path to the directory containing `.pt` files with WSI features and `.npy` files
                 with patch coordinates.
             label_file (str): Path to the CSV file containing the labels for each WSI or block.
+            use_p53 (bool): Whether to use features derived from p53 (if available for sample). Default is 'True'.
             binary (bool, optional): Whether to use a binary classification setting (e.g., non-dysplastic vs dysplastic).
                 If `True`, labels will be binarized. Default is `False`.
         """
@@ -97,10 +99,11 @@ class BagDataset:
         self.P53_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'P53' in f])
         self.coord_files = sorted([f for f in os.listdir(features_dir) if '.npy' in f and 'HE' in f])
         self.labels = pd.read_csv(label_file)
+        self.use_p53 = use_p53
 
         # filter out where we don't have both a file and a label
         block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
-        self.block_ids = [x for x in self.labels['block id'] if x in block_id_files]
+        self.block_ids = [x for x in self.labels['block_id'] if x in block_id_files]
 
         self.features = []
         self.p53_available = []
@@ -112,7 +115,7 @@ class BagDataset:
             # check if p53 features are available for this block
             matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
 
-            if matching_p53:
+            if matching_p53 and self.use_p53:
                 p53_features = torch.load(os.path.join(features_dir, matching_p53))
                 stack = torch.cat([he_features, p53_features], dim=0)
                 self.features.append(stack)
@@ -120,9 +123,11 @@ class BagDataset:
             else:
                 self.features.append(he_features)
 
-        print('{} of which {} have p53 features'.format(len(self.block_ids), len(self.p53_available)))
+        print('{} of which {} have p53 features available'.format(len(self.block_ids), len(self.p53_available)))
+        print('Using p53 features: {}'.format(self.use_p53))
+
         # convert grades to tensors
-        self.labels = [torch.tensor(self.labels[self.labels['block id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids]
+        self.labels = [torch.tensor(self.labels[self.labels['block_id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids]
         self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
 
         if binary:

@@ -1,20 +1,22 @@
 import os
-from pathlib import Path
-import yaml
 import shutil
+import argparse
+from pathlib import Path
+import time
 
-from data import LANSFileDataset
 import numpy as np
-from dlup.data.dataset import WsiAnnotations, TiledWsiDataset, TilingMode
-from dlup import SlideImage
+import yaml
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 import timm
+from PIL import Image, ImageDraw
+from huggingface_hub import login
 from timm.data import resolve_data_config
 from timm.layers import SwiGLUPacked
-from huggingface_hub import login
-import argparse
-from PIL import Image, ImageDraw
+from torch.utils.data import DataLoader, TensorDataset
+from dlup import SlideImage
+from dlup.data.dataset import WsiAnnotations, TiledWsiDataset, TilingMode
+
+from data import LANSFileDataset
 
 
 def extract_rois(wsi, wsa, margin=1000):
@@ -71,32 +73,30 @@ def extract_rois(wsi, wsa, margin=1000):
             return rois
 
 
-def extract_features(sample, model_name, target_mpp=1, tile_size=(224, 224), tile_overlap=(0, 0), batch_size=64,
-                     mask_threshold=0.2):
+def extract_features(sample,
+                     model,
+                     transforms,
+                     device,
+                     target_mpp=1,
+                     tile_size=(224, 224),
+                     tile_overlap=(0, 0),
+                     batch_size=64,
+                     mask_threshold=0.2,
+                     save_thumbnail=False):
     wsi_path, wsa_path, wsm_path, block_id = sample
     print('Processing: {}, file: {}'.format(block_id, wsi_path))
 
-    # open image and annotation file
+    timings = {}
+
+    # Timing slide and annotation loading
+    start_time = time.time()
     wsi = SlideImage.from_file_path(wsi_path)
     wsa = WsiAnnotations.from_asap_xml(wsa_path)
     wsm = SlideImage.from_file_path(wsm_path)
+    timings['loading_slide'] = time.time() - start_time
 
-    # make the model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # need to specify MLP layer and activation function for proper init
-    model = timm.create_model(model_name,
-                              pretrained=True,
-                              mlp_layer=SwiGLUPacked,
-                              act_layer=torch.nn.SiLU)
-
-    model = model.eval().to(device)
-
-    # get model specific transforms (normalization, resize)
-    data_config = timm.data.resolve_model_data_config(model)
-    transforms = timm.data.create_transform(**data_config, is_training=False)
-
-    # extract rois + dataset
+    # Timing ROI extraction and dataset creation
+    start_time = time.time()
     rois = extract_rois(wsi, wsa)
     dataset = TiledWsiDataset.from_standard_tiling(wsi_path,
                                                    mpp=target_mpp,
@@ -106,52 +106,83 @@ def extract_features(sample, model_name, target_mpp=1, tile_size=(224, 224), til
                                                    tile_mode=TilingMode.skip,
                                                    rois=rois,
                                                    mask=wsm)
-    # extract coordinates and features
-    coords = [np.array(d["coordinates"]) for d in dataset]
+    timings['dataset_creation'] = time.time() - start_time
+
+    # Timing feature extraction
+    start_time = time.time()
+    coords = [np.array(d['coordinates']) for d in dataset]
     patches_tensor = torch.stack([transforms(d['image'].convert('RGB')) for d in dataset])
     tensor_dataset = TensorDataset(patches_tensor)
-    dataloader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=False)
+    dataloader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    timings['data_preprocessing'] = time.time() - start_time
 
+    # Timing model inference
+    start_time = time.time()
     with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16):
-
         embeddings = []
         for x in dataloader:
-
-            output = model(x[0].to(device))           # size: 1 x 261 x 1280
-
-            class_token = output[:, 0]                # size: 1 x 1280
-            patch_tokens = output[:, 5:]              # size: 1 x 256 x 1280, tokens 1-4 are register tokens, ignore those
-
-            # concatenate class token and average pool of patch tokens
-            embedding = torch.cat([class_token, patch_tokens.mean(1)], dim=-1)  # size: 1 x 2560
+            output = model(x[0].to(device))
+            class_token = output[:, 0]
+            patch_tokens = output[:, 5:]
+            embedding = torch.cat([class_token, patch_tokens.mean(1)], dim=-1)
             embedding = embedding.to(torch.float16)
             embeddings.append(embedding)
 
         feats = torch.cat(embeddings, dim=0)
-        print('Features shape: {}\n'.format(feats.shape))
+    timings['feature_extraction'] = time.time() - start_time
+    print('Features shape: {}'.format(feats.shape))
 
-    # generate a thumbnail for verification
-    scaled_region_view = wsi.get_scaled_view(wsi.get_scaling(target_mpp))
-    thumb = Image.new("RGBA", tuple(scaled_region_view.size), (255, 255, 255, 255))
+    thumb = None
+    if save_thumbnail:
 
-    for d in dataset:
-        tile = d["image"]
-        coords = np.array(d["coordinates"])
-        box = tuple(np.array((*coords, *(coords + tile_size))).astype(int))
-        thumb.paste(tile, box)
-        draw = ImageDraw.Draw(thumb)
-        draw.rectangle(box, outline="red")
+        start_time = time.time()
+        scaled_region_view = wsi.get_scaled_view(wsi.get_scaling(target_mpp))
+        thumb = Image.new("RGBA", tuple(scaled_region_view.size), (255, 255, 255, 255))
 
-    return feats, coords, thumb  # feats = (batch_size, num_features) shaped tensor
+        for d in dataset:
+            tile = d["image"]
+            coords = np.array(d["coordinates"])
+            box = tuple(np.array((*coords, *(coords + tile_size))).astype(int))
+            thumb.paste(tile, box)
+            draw = ImageDraw.Draw(thumb)
+            draw.rectangle(box, outline="red")
+
+        timings['thumbnail_generation'] = time.time() - start_time
+
+    print('Timings (in seconds):')
+    for key, value in timings.items():
+        print(f"{key}: {value:.4f}")
+
+    return feats, coords, thumb
+
+
+def get_model(model_name):
+
+    # need to specify MLP layer and activation function for proper init
+    model = timm.create_model(model_name,
+                              pretrained=True,
+                              mlp_layer=SwiGLUPacked,
+                              act_layer=torch.nn.SiLU)
+
+    model = model.eval()
+
+    # get model specific transforms (normalization, resize)
+    data_config = timm.data.resolve_model_data_config(model)
+    transforms = timm.data.create_transform(**data_config, is_training=False)
+
+    return model, transforms
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default='/data/archief/AMC-data/Barrett/LANS/')
-    parser.add_argument("--output_path", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53/')
+    parser.add_argument("--data_path", type=str,
+                        default='/data/archief/AMC-data/Barrett/LANS/')
+    parser.add_argument("--output_path", type=str,
+                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_0.5mpp/')
     parser.add_argument("--config_file", type=str,
                         default='/home/mbotros/code/lans_weaksupervised/configs/extract_config_virchow.yaml')
+    parser.add_argument("--save_thumbnail", type=bool, default=False)
     args = parser.parse_args()
 
     # load config for extraction
@@ -166,6 +197,11 @@ if __name__ == '__main__':
     # hugging face token required
     login()
 
+    # get the model + transforms
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, transforms = get_model(model_name=config['model']['name'])
+    model = model.to(device)
+
     lans_he_dataset = LANSFileDataset(Path(args.data_path), stain='HE')
     lans_p53_dataset = LANSFileDataset(Path(args.data_path), stain='P53')
 
@@ -179,11 +215,14 @@ if __name__ == '__main__':
             try:
                 features, coordinates, thumbnail = extract_features(
                     sample,
-                    model_name=config['model']['name'],
+                    model=model,
+                    transforms=transforms,
                     target_mpp=config['data']['target_mpp'],
                     tile_size=config['data']['tile_size'],
                     tile_overlap=config['data']['tile_overlap'],
-                    batch_size=config['data']['batch_size']
+                    batch_size=config['data']['batch_size'],
+                    save_thumbnail=args.save_thumbnail,
+                    device=device
                 )
 
                 # Store the features and coordinates
@@ -191,8 +230,8 @@ if __name__ == '__main__':
                 coord_file = os.path.join(args.output_path, f"{block_id}-{stain}-coords.npy")
                 feat_file = os.path.join(args.output_path, f"{block_id}-{stain}-features.pt")
                 thumb_file = os.path.join(args.output_path, f"{block_id}-{stain}-thumb.png")
-
-                thumbnail.save(thumb_file, optimize=True, quality=95)
+                if thumbnail:
+                    thumbnail.save(thumb_file, optimize=True, quality=95)
                 np.save(coord_file, coordinates)
                 torch.save(features, feat_file)
 
