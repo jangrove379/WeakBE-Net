@@ -32,7 +32,8 @@ def filter_image_files(image_files, stain='HE'):
 
     for block_id in block_ids:
         # find all files with this block id
-        file = [f for f in image_files if block_id in str(f)][0] # select the first file (1) HE.tiff or (2) HE_1.tiff if not (1) not there
+        file = [f for f in image_files if block_id in str(f)][
+            0]  # select the first file (1) HE.tiff or (2) HE_1.tiff if not (1) not there
         block_identifiers.append((block_id[:-1]))
         files.append(file)
 
@@ -80,7 +81,8 @@ class BagDataset:
     along with their corresponding labels and spatial coordinates. Each WSI (bag) consists of multiple
     instances (patch-level features).
     """
-    def __init__(self, features_dir, label_file, use_p53, binary=False):
+
+    def __init__(self, features_dir, label_file, use_p53, include_ind=False, binary=False):
         """
         Initializes the BagDataset object by loading features, coordinates, and labels
         from the specified directory and label file.
@@ -98,15 +100,28 @@ class BagDataset:
         self.HE_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'HE' in f])
         self.P53_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'P53' in f])
         self.coord_files = sorted([f for f in os.listdir(features_dir) if '.npy' in f and 'HE' in f])
-        self.labels = pd.read_csv(label_file)
         self.use_p53 = use_p53
 
-        # filter out where we don't have both a file and a label
-        block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
-        self.block_ids = [x for x in self.labels['block_id'] if x in block_id_files]
+        # load and update labels df
+        self.labels = pd.read_csv(label_file)
+        self.labels = self.update_consensus_labels(include_ind=include_ind)
+        self.labels = self.update_p53_labels()
 
+        # filter out where we don't have both a file and a label
+        self.block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
+        self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files]
+
+        # get coordinates and labels
+        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
+        self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
+                            for b in self.block_ids]
+        self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
+                           for b in self.block_ids]
+        if binary:
+            self.cons_labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in
+                                self.cons_labels]
         self.features = []
-        self.p53_available = []
+        self.p53_file_available = []
 
         for block_id in self.block_ids:
 
@@ -119,19 +134,30 @@ class BagDataset:
                 p53_features = torch.load(os.path.join(features_dir, matching_p53))
                 stack = torch.cat([he_features, p53_features], dim=0)
                 self.features.append(stack)
-                self.p53_available.append(block_id)
+                self.p53_file_available.append(1)
             else:
                 self.features.append(he_features)
+                self.p53_file_available.append(0)
 
-        print('{} of which {} have p53 features available'.format(len(self.block_ids), len(self.p53_available)))
+        print('{} of which {} have p53 features available'.format(len(self.block_ids), sum(self.p53_file_available)))
         print('Using p53 features: {}'.format(self.use_p53))
 
-        # convert grades to tensors
-        self.labels = [torch.tensor(self.labels[self.labels['block_id'] == b]['dx'].values[0], dtype=torch.long) for b in self.block_ids]
-        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
+    def update_consensus_labels(self, include_ind=False):
+        labels = self.labels.copy()
 
-        if binary:
-            self.labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in self.labels]
+        if include_ind:
+            labels["dx"] = labels["dx"].replace({1: 0, 2: 1, 3: 2, 4: 3})
+        else:
+            labels["dx"] = labels["dx"].replace({1: 0, 2: np.nan, 3: 1, 4: 2})
+            labels = labels.dropna(subset=["dx"])
+
+        return labels
+
+    def update_p53_labels(self):
+        labels = self.labels.copy()
+        labels["p53"] = self.labels["p53"].replace({1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5})
+
+        return labels
 
     def __len__(self):
         return len(self.features)
@@ -151,11 +177,13 @@ class BagDataset:
                 - block_id (str): Identifier for the block, useful for tracking the source of each bag.
         """
         features = self.features[idx]
-        label = self.labels[idx]
+        p53_file_available = self.p53_file_available[idx]
+        cons_label = self.cons_labels[idx]
+        p53_label = self.p53_labels[idx]
         coordinates = self.coordinates[idx]
         block_id = self.block_ids[idx]
 
-        return features, label, coordinates, block_id
+        return features, cons_label, coordinates, block_id
 
 
 def collate_fn(batch):
@@ -190,7 +218,8 @@ def get_class_weights(dataset):
         class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
     """
     labels = [label.item() for _, label, _, _ in dataset]
-    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels), dtype=torch.float)
+    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels),
+                                 dtype=torch.float)
     return class_weights
 
 
@@ -228,4 +257,3 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
         yield fold, train_loader, val_loader, class_weights
-

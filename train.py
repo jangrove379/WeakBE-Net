@@ -32,11 +32,14 @@ def train(args):
         features_dir=args.features_dir,
         label_file=args.label_file,
         use_p53=args.use_p53,
-        binary=args.binary)
+        binary=args.binary,
+        include_ind=args.include_ind)
 
     print('Total length dataset: {}'.format(len(dataset)))
-    labels = np.array(dataset.labels)
+    labels = np.array(dataset.cons_labels)
+    num_classes = len(np.unique(labels))
     print('Label counts: {}'.format(np.unique(labels, return_counts=True)))
+    print('Using class weights: {}'.format(args.use_class_weights))
     print('Using features from: {}'.format(args.features_dir))
 
     # load config for extraction
@@ -80,13 +83,14 @@ def train(args):
                                               mode='min',
                                               filename='best_model')
 
+        class_weights = class_weights if args.use_class_weights else None
         model = MILModel(feature_dim=feat_extraction_config['model']['feature_dim'],
                          hidden_dim=args.hidden_dim,
+                         output_dim=num_classes,
                          lr=args.lr,
                          wd=args.wd,
                          drop_out=args.drop_out,
                          run_dir=fold_dir,
-                         binary=args.binary,
                          class_weights=class_weights)
 
         trainer = pl.Trainer(max_epochs=args.nr_epochs,
@@ -103,6 +107,7 @@ def train(args):
         best_model = MILModel.load_from_checkpoint(best_model_path,
                                                    feature_dim=feat_extraction_config['model']['feature_dim'],
                                                    hidden_dim=args.hidden_dim,
+                                                   output_dim=num_classes,
                                                    run_dir=fold_dir,
                                                    binary=args.binary,
                                                    class_weights=class_weights)
@@ -127,27 +132,27 @@ class MILModel(pl.LightningModule):
     def __init__(self,
                  feature_dim=512,
                  hidden_dim=512,
+                 output_dim=3,
                  lr=1e-5,
                  wd=1e-4,
                  drop_out=0.2,
                  class_weights=None,
-                 binary=False,
                  run_dir=None):
 
         super(MILModel, self).__init__()
-        self.output_dim = 1 if binary else 3
+        self.output_dim = output_dim
         self.model = AttentionMIL(feature_dim=feature_dim,
                                   hidden_dim=hidden_dim,
-                                  output_dim=self.output_dim,
+                                  output_dim=output_dim,
                                   drop_out=drop_out)
         self.lr = lr
         self.wd = wd
 
         # Use class weights for multi class, binary was almost equal already
-        self.criterion = nn.BCEWithLogitsLoss() if binary else nn.CrossEntropyLoss(weight=class_weights)
+        self.criterion = nn.BCEWithLogitsLoss() if output_dim == 1 else nn.CrossEntropyLoss(weight=class_weights)
 
         # Metrics + Confusion Matrix
-        if binary:
+        if output_dim == 1:
             self.binary_accuracy = BinaryAccuracy()
             self.binary_auroc = BinaryAUROC()
             self.binary_precision = BinaryPrecision()
@@ -158,11 +163,16 @@ class MILModel(pl.LightningModule):
                             'recall': self.binary_recall}
             self.conf_matrix = ConfusionMatrix(num_classes=2, task="binary")
             self.class_labels = ['Non-Dysplastic', 'Dysplastic']
-        else:
-            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.output_dim)
+        elif output_dim == 3:
+            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.output_dim, average='micro')
             self.metrics = {'accuracy': self.multi_class_accuracy}
-            self.conf_matrix = ConfusionMatrix(num_classes=3, task="multiclass")
+            self.conf_matrix = ConfusionMatrix(num_classes=self.output_dim, task="multiclass")
             self.class_labels = ['NDBE', 'LGD', 'HGD']
+        elif output_dim == 4:
+            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.output_dim, average='micro')
+            self.metrics = {'accuracy': self.multi_class_accuracy}
+            self.conf_matrix = ConfusionMatrix(num_classes=self.output_dim, task="multiclass")
+            self.class_labels = ['NDBE', 'IND', 'LGD', 'HGD']
 
         # for final validation round: store predictions
         self.val_probs = []
@@ -225,7 +235,7 @@ class MILModel(pl.LightningModule):
         else:
             self.log('val_loss', loss, prog_bar=True)
             for name, metric in self.metrics.items():
-                self.log('val_{}'.format(name), metric(preds, labels), prog_bar=True, on_epoch=True)
+                self.log('val_{}'.format(name), metric(preds, labels), prog_bar=True)
 
         return loss
 
@@ -292,16 +302,14 @@ class MILModel(pl.LightningModule):
                 auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
                                                                                       probs=probs.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
-
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
                     self.log('final_val_{}_precision'.format(class_n), precision[i])
                     self.log('final_val_{}_recall'.format(class_n), recall[i])
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
 
-                results_df['prob_nd'] = probs[:, 0].cpu().numpy()
-                results_df['prob_lgd'] = probs[:, 1].cpu().numpy()
-                results_df['prob_hgd'] = probs[:, 2].cpu().numpy()
+                for i, class_name in enumerate(self.class_labels):
+                    results_df['prob_{}'.format(class_name)] = probs[:, i].cpu().numpy()
 
             print(results_df)
             results_save_path = os.path.join(self.run_dir, 'results.csv')
@@ -314,11 +322,13 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='new_sheet_test-2', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='run_1', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
-    parser.add_argument("--project_name", type=str, default='WeakBE-Net_multiclass', help="the name of this project")
+    parser.add_argument("--project_name", type=str, default='WeakBE-Net_with_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
+    parser.add_argument("--include_ind", type=bool, default=True, help="whether to include IND cases")
     parser.add_argument("--use_p53", type=bool, default=True, help="whether use p53 features if available")
+    parser.add_argument("--use_class_weights", type=bool, default=False, help="whether to use frequency based weights")
     parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
@@ -331,7 +341,7 @@ if __name__ == '__main__':
     parser.add_argument("--features_dir", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53')
     parser.add_argument("--label_file", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels.csv')
+                        default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels_with_ind.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True)
     args = parser.parse_args()
