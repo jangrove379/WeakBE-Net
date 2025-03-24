@@ -45,7 +45,7 @@ class LANSFileDataset:
     A file dataset class used to keep track of the associated files in the LANS dataset.
     """
 
-    def __init__(self, data_dir, stain='HE'):
+    def __init__(self, data_dir, stain="HE"):
 
         # location of data
         self.data_dir = data_dir
@@ -108,11 +108,11 @@ class BagDataset:
         self.labels = self.update_p53_labels()
 
         # filter out where we don't have both a file and a label
-        self.block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
+        self.block_id_files = [f.split('HE')[0][:-1] for f in self.HE_feature_files]
         self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files]
 
         # get coordinates and labels
-        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
+        self.coordinates = [np.load(os.path.join(features_dir, b + '-HE-coords.npy')) for b in self.block_ids]
         self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
                             for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
@@ -125,7 +125,7 @@ class BagDataset:
 
         for block_id in self.block_ids:
 
-            he_features = torch.load(os.path.join(features_dir, block_id + 'HE-features.pt'))
+            he_features = torch.load(os.path.join(features_dir, block_id + '-HE-features.pt'))
 
             # check if p53 features are available for this block
             matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
@@ -154,6 +154,14 @@ class BagDataset:
         return labels
 
     def update_p53_labels(self):
+        """ New mapping:
+        0: OE
+        1: WT
+        2: NM
+        3: DC
+        4: IND
+        4: not present
+        """
         labels = self.labels.copy()
         labels["p53"] = self.labels["p53"].replace({1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5})
 
@@ -163,40 +171,32 @@ class BagDataset:
         return len(self.features)
 
     def __getitem__(self, idx):
-        """
-        Retrieves a single sample from the dataset.
-
-        Args:
-            idx (int): Index of the sample to retrieve.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, np.ndarray, str]:
-                - features (torch.Tensor): Tensor of shape (num_patches, feature_dim)
-                - label (torch.Tensor): Tensor of shape (num_patches, 1) containing the label for the corresponding WSI.
-                - coordinates (np.ndarray): Array of shape (num_patches, 2) representing the (x, y) coordinates of each patch.
-                - block_id (str): Identifier for the block, useful for tracking the source of each bag.
-        """
-        features = self.features[idx]
-        p53_file_available = self.p53_file_available[idx]
-        cons_label = self.cons_labels[idx]
-        p53_label = self.p53_labels[idx]
-        coordinates = self.coordinates[idx]
-        block_id = self.block_ids[idx]
-
-        return features, cons_label, coordinates, block_id
+        """Retrieve a single sample from the dataset."""
+        return {
+            "features": self.features[idx],                       # (num_patches, feature_dim)
+            "cons_label": self.cons_labels[idx],                  # (num_patches, 1) Consensus label
+            "coordinates": self.coordinates[idx],                 # (num_patches, 2) Patch (x, y) coordinates
+            "block_id": self.block_ids[idx],                      # Block identifier
+            "p53_file_available": self.p53_file_available[idx],   # Boolean indicating p53 file availability
+            "p53_label": self.p53_labels[idx]                     # p53 mutation status label
+        }
 
 
 def collate_fn(batch):
     """ Makes sure batches are the same length by padding. A mask is used to keep track of padded instances.
-
-    Args:
-        batch: (n_feat, n_labels, n_coords, n_block_ids)
     """
-    features, labels, coords, block_ids = zip(*batch)
-    max_patches = max(f.shape[0] for f in features)
+    features, cons_labels, coords, block_ids, p53_avail, p53_labels = zip(*[
+        (sample["features"],
+         sample["cons_label"],
+         sample["coordinates"],
+         sample["block_id"],
+         sample["p53_file_available"],
+         sample["p53_label"]) for sample in batch])
 
+    max_patches = max(f.shape[0] for f in features)
     padded_features = []
     masks = []
+
     for f in features:
         pad_size = max_patches - f.shape[0]
         padded = F.pad(f, (0, 0, 0, pad_size))
@@ -204,7 +204,14 @@ def collate_fn(batch):
         padded_features.append(padded)
         masks.append(mask)
 
-    return torch.stack(padded_features), torch.stack(masks), torch.tensor(labels), coords, block_ids
+    return {
+        "features": torch.stack(padded_features),
+        "mask": torch.stack(masks),
+        "cons_label": torch.tensor(cons_labels),
+        "coordinates": coords,
+        "block_id": block_ids,
+        "p53_file_available": p53_avail,
+        "p53_label": torch.tensor(p53_labels)}
 
 
 def get_class_weights(dataset):
@@ -217,7 +224,7 @@ def get_class_weights(dataset):
     Returns:
         class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
     """
-    labels = [label.item() for _, label, _, _ in dataset]
+    labels = [sample["cons_label"].item() for sample in dataset]
     class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels),
                                  dtype=torch.float)
     return class_weights
