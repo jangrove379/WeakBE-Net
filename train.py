@@ -340,7 +340,7 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='test_run_0.5mpp', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='test', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_no_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")

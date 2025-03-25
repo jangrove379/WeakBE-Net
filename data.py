@@ -103,9 +103,10 @@ class BagDataset:
         self.use_p53 = use_p53
 
         # load and update labels df
-        self.labels = pd.read_csv(label_file)
+        self.labels = pd.read_csv(label_file, index_col=0)
         self.labels = self.update_consensus_labels(include_ind=include_ind)
         self.labels = self.update_p53_labels()
+        self.labels = self.update_individual_labels()
 
         # filter out where we don't have both a file and a label
         self.block_id_files = [f.split('HE')[0][:-1] for f in self.HE_feature_files]
@@ -117,6 +118,12 @@ class BagDataset:
                             for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
                            for b in self.block_ids]
+        self.rater_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
+                                                                                        self.labels.columns.get_loc(
+                                                                                            'p53') + 1:]].values.flatten(),
+                                          dtype=torch.long)
+                             for b in self.block_ids]
+
         if binary:
             self.cons_labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in
                                 self.cons_labels]
@@ -143,6 +150,13 @@ class BagDataset:
         print('Using p53 features: {}'.format(self.use_p53))
 
     def update_consensus_labels(self, include_ind=False):
+        """
+                        include_ind=False   include_ind=True
+        1 = NDBE        => 0                => 0
+        2 = IND         => Nan              => 1
+        3 = LGD         => 1                => 2
+        4 = HGD         => 2                => 3
+        """
         labels = self.labels.copy()
 
         if include_ind:
@@ -153,6 +167,22 @@ class BagDataset:
 
         return labels
 
+    def update_individual_labels(self):
+        """
+        0 = not rated   => 3
+        1 = NDBE        => 0
+        2 = IND         => 4
+        3 = LGD         => 1
+        4 = HGD         => 2
+        """
+        labels = self.labels.copy()
+
+        # Get all columns after 'dx'
+        columns_after_dx = labels.columns[labels.columns.get_loc("p53") + 1:]
+        labels[columns_after_dx] = labels[columns_after_dx].replace({0: 3, 1: 0, 2: 4, 3: 1, 4: 2})
+
+        return labels
+
     def update_p53_labels(self):
         """ New mapping:
         0: OE
@@ -160,7 +190,7 @@ class BagDataset:
         2: NM
         3: DC
         4: IND
-        4: not present
+        5: not present
         """
         labels = self.labels.copy()
         labels["p53"] = self.labels["p53"].replace({1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5})
@@ -178,20 +208,22 @@ class BagDataset:
             "coordinates": self.coordinates[idx],                 # (num_patches, 2) Patch (x, y) coordinates
             "block_id": self.block_ids[idx],                      # Block identifier
             "p53_file_available": self.p53_file_available[idx],   # Boolean indicating p53 file availability
-            "p53_label": self.p53_labels[idx]                     # p53 mutation status label
+            "p53_label": self.p53_labels[idx],                    # p53 mutation status label
+            "rater_labels": self.rater_labels[idx]                # (num_patches, 20) Individual rater labels
         }
 
 
 def collate_fn(batch):
     """ Makes sure batches are the same length by padding. A mask is used to keep track of padded instances.
     """
-    features, cons_labels, coords, block_ids, p53_avail, p53_labels = zip(*[
+    features, cons_labels, coords, block_ids, p53_avail, p53_labels, rater_labels = zip(*[
         (sample["features"],
          sample["cons_label"],
          sample["coordinates"],
          sample["block_id"],
          sample["p53_file_available"],
-         sample["p53_label"]) for sample in batch])
+         sample["p53_label"],
+         sample["rater_labels"]) for sample in batch])
 
     max_patches = max(f.shape[0] for f in features)
     padded_features = []
@@ -211,7 +243,9 @@ def collate_fn(batch):
         "coordinates": coords,
         "block_id": block_ids,
         "p53_file_available": p53_avail,
-        "p53_label": torch.tensor(p53_labels)}
+        "p53_label": torch.tensor(p53_labels),
+        "rater_labels": torch.stack(rater_labels)
+    }
 
 
 def get_class_weights(dataset):
