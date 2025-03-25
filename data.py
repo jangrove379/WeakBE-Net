@@ -114,7 +114,7 @@ class BagDataset:
 
         # get coordinates and labels
         self.coordinates = [np.load(os.path.join(features_dir, b + '-HE-coords.npy')) for b in self.block_ids]
-        self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
+        self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.float32)
                             for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
                            for b in self.block_ids]

@@ -86,7 +86,8 @@ def train(args):
         class_weights = class_weights if args.use_class_weights else None
         model = MILModel(feature_dim=feat_extraction_config['model']['feature_dim'],
                          hidden_dim=args.hidden_dim,
-                         output_dim=num_classes,
+                         num_classes=num_classes,
+                         output_dim=1,
                          lr=args.lr,
                          wd=args.wd,
                          drop_out=args.drop_out,
@@ -126,13 +127,14 @@ def train(args):
 
 
 class MILModel(pl.LightningModule):
-    """ Implements a standard MIL model for classification.
+    """ Implements a standard MIL model for regression.
     """
 
     def __init__(self,
                  feature_dim=512,
                  hidden_dim=512,
-                 output_dim=3,
+                 output_dim=1,
+                 num_classes=3,
                  lr=1e-5,
                  wd=1e-4,
                  drop_out=0.2,
@@ -140,6 +142,7 @@ class MILModel(pl.LightningModule):
                  run_dir=None):
 
         super(MILModel, self).__init__()
+        self.num_classes = num_classes
         self.output_dim = output_dim
         self.model = AttentionMIL(feature_dim=feature_dim,
                                   hidden_dim=hidden_dim,
@@ -147,12 +150,10 @@ class MILModel(pl.LightningModule):
                                   drop_out=drop_out)
         self.lr = lr
         self.wd = wd
-
-        # Use class weights for multi class, binary was almost equal already
-        self.criterion = nn.BCEWithLogitsLoss() if output_dim == 1 else nn.CrossEntropyLoss(weight=class_weights)
+        self.criterion = nn.MSELoss()
 
         # Metrics + Confusion Matrix
-        if output_dim == 1:
+        if num_classes == 2:
             self.binary_accuracy = BinaryAccuracy()
             self.binary_auroc = BinaryAUROC()
             self.binary_precision = BinaryPrecision()
@@ -163,20 +164,20 @@ class MILModel(pl.LightningModule):
                             'recall': self.binary_recall}
             self.conf_matrix = ConfusionMatrix(num_classes=2, task="binary")
             self.class_labels = ['Non-Dysplastic', 'Dysplastic']
-        elif output_dim == 3:
-            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.output_dim, average='micro')
+        elif num_classes == 3:
+            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.num_classes, average='micro')
             self.metrics = {'accuracy': self.multi_class_accuracy}
-            self.conf_matrix = ConfusionMatrix(num_classes=self.output_dim, task="multiclass")
+            self.conf_matrix = ConfusionMatrix(num_classes=self.num_classes, task="multiclass")
             self.class_labels = ['NDBE', 'LGD', 'HGD']
-        elif output_dim == 4:
-            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.output_dim, average='micro')
+        elif num_classes == 4:
+            self.multi_class_accuracy = MulticlassAccuracy(num_classes=self.num_classes, average='micro')
             self.metrics = {'accuracy': self.multi_class_accuracy}
-            self.conf_matrix = ConfusionMatrix(num_classes=self.output_dim, task="multiclass")
+            self.conf_matrix = ConfusionMatrix(num_classes=self.num_classes, task="multiclass")
             self.class_labels = ['NDBE', 'IND', 'LGD', 'HGD']
 
         # for final validation round: store predictions
-        self.val_probs = []
-        self.val_preds = []
+        self.val_pred_score = []
+        self.val_pred_class = []
         self.val_labels = []
         self.val_block_ids = []
         self.val_p53_available = []
@@ -199,7 +200,6 @@ class MILModel(pl.LightningModule):
         valid_bags = masks.sum(dim=1) > 0
         valid_predictions = logits[valid_bags]
         valid_labels = labels[valid_bags]
-        valid_labels = valid_labels if self.output_dim > 1 else valid_labels.float()
         loss = self.criterion(valid_predictions, valid_labels)
         return loss
 
@@ -207,15 +207,15 @@ class MILModel(pl.LightningModule):
         bag_features = batch["features"]
         masks = batch["mask"]
         labels = batch["cons_label"]
+        
+        pred_score, _ = self(bag_features, masks)
+        loss = self.compute_loss(pred_score, labels, masks)
+        pred_class = torch.where(pred_score < 0.5, 0,
+                                 torch.where(pred_score < 1.5, 1, 2))
 
-        assert (len(bag_features) > 0)
-        logits, _ = self(bag_features, masks)
-        assert (len(logits) > 0)
-        labels = labels if self.output_dim > 1 else labels.float()
-        loss = self.compute_loss(logits, labels, masks)
         self.log('train_loss', loss, on_step=True, on_epoch=True)
         for name, metric in self.metrics.items():
-            self.log('train_{}'.format(name), metric(logits, labels), on_step=True, on_epoch=True)
+            self.log('train_{}'.format(name), metric(pred_class, labels), on_step=True, on_epoch=True)
 
         return loss
 
@@ -227,20 +227,15 @@ class MILModel(pl.LightningModule):
         p53_file_available = batch["p53_file_available"]
         p53_labels = batch["p53_label"]
 
-        logits, _ = self(bag_features, masks)
-        loss = self.compute_loss(logits, labels, masks)
-
-        if self.output_dim == 1:
-            probs = torch.sigmoid(logits)
-            preds = probs > 0.5
-        else:
-            probs = torch.softmax(logits, dim=1)
-            preds = torch.argmax(probs, dim=1)
+        pred_score, _ = self(bag_features, masks)
+        loss = self.compute_loss(pred_score, labels, masks)
+        pred_class = torch.where(pred_score < 0.5, 0,
+                                 torch.where(pred_score < 1.5, 1, 2))
 
         # Store predictions if final validation
         if self.final_validation:
-            self.val_probs.append(probs)
-            self.val_preds.append(preds)
+            self.val_pred_score.append(pred_score)
+            self.val_pred_class.append(pred_class)
             self.val_labels.append(labels)
             self.val_block_ids.append(block_ids)
             self.val_p53_available.append(p53_file_available)
@@ -248,7 +243,7 @@ class MILModel(pl.LightningModule):
         else:
             self.log('val_loss', loss, prog_bar=True)
             for name, metric in self.metrics.items():
-                self.log('val_{}'.format(name), metric(preds, labels), prog_bar=True)
+                self.log('val_{}'.format(name), metric(pred_class, labels), prog_bar=True)
 
         return loss
 
@@ -294,8 +289,8 @@ class MILModel(pl.LightningModule):
     def on_validation_epoch_end(self):
         """Compute confusion matrix only at final validation round"""
         if self.final_validation:
-            preds = torch.cat(self.val_preds)
-            probs = torch.cat(self.val_probs)
+            preds = torch.cat(self.val_pred_class)
+            score = torch.cat(self.val_pred_score)
             labels = torch.cat(self.val_labels)
             p53_labels = torch.cat(self.val_p53_labels)
             p53_available = [item for tup in self.val_p53_available for item in tup]
@@ -311,23 +306,20 @@ class MILModel(pl.LightningModule):
                                        'p53_available': p53_available,
                                        'pred': preds.cpu().numpy()})
 
-            if self.output_dim == 1:  # binary
-                results_df['prob'] = probs.cpu().numpy()
-                self.compute_roc_curve(labels.cpu().numpy().astype(int), probs.cpu().numpy())
+            if self.num_classes == 1:  # binary
+                results_df['prob'] = score.cpu().numpy()
+                self.compute_roc_curve(labels.cpu().numpy().astype(int), score.cpu().numpy())
                 self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
             else:  # multi-class
                 self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
                 auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
-                                                                                      probs=probs.cpu().numpy(),
+                                                                                      probs=score.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
                     self.log('final_val_{}_precision'.format(class_n), precision[i])
                     self.log('final_val_{}_recall'.format(class_n), recall[i])
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
-
-                for i, class_name in enumerate(self.class_labels):
-                    results_df['prob_{}'.format(class_name)] = probs[:, i].cpu().numpy()
 
             print(results_df)
             results_save_path = os.path.join(self.run_dir, 'results.csv')
@@ -340,7 +332,7 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='test', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='regression_0.5mpp_no_ind', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_no_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
