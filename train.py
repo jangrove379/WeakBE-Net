@@ -108,7 +108,8 @@ def train(args):
         best_model = MILModel.load_from_checkpoint(best_model_path,
                                                    feature_dim=feat_extraction_config['model']['feature_dim'],
                                                    hidden_dim=args.hidden_dim,
-                                                   output_dim=num_classes,
+                                                   num_classes=num_classes,
+                                                   output_dim=1,
                                                    run_dir=fold_dir,
                                                    binary=args.binary,
                                                    class_weights=class_weights)
@@ -260,20 +261,20 @@ class MILModel(pl.LightningModule):
         plt.savefig(os.path.join(self.run_dir, 'confusion_matrix.png'))
         plt.close()
 
-    def compute_per_class_metrics(self, preds, probs, labels):
+    def compute_per_class_metrics(self, preds, score, labels):
         # compute auc per class
         auc_per_class = []
         for i in range(len(self.class_labels)):
             binary_true = (labels == i).astype(int)
-            auc_score = roc_auc_score(binary_true, probs[:, i])
+            auc_score = roc_auc_score(binary_true, score)
             auc_per_class.append(auc_score)
 
         # compute precision recall and f1 per class
         precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average=None)
         return auc_per_class, precision, recall, f1
 
-    def compute_roc_curve(self, labels, probs):
-        fpr, tpr, _ = roc_curve(labels, probs)
+    def compute_roc_curve(self, labels, score):
+        fpr, tpr, _ = roc_curve(labels, score)
         roc_auc = auc(fpr, tpr)
         plt.figure(figsize=(7, 7))
         plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
@@ -313,7 +314,7 @@ class MILModel(pl.LightningModule):
             else:  # multi-class
                 self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
                 auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
-                                                                                      probs=score.cpu().numpy(),
+                                                                                      score=score.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
@@ -332,7 +333,7 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='regression_0.5mpp_no_ind', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='regression_0.5mpp', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_no_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
