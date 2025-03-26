@@ -305,7 +305,8 @@ class MILModel(pl.LightningModule):
                                        'label': labels.cpu().numpy(),
                                        'p53_label': p53_labels.cpu().numpy(),
                                        'p53_available': p53_available,
-                                       'pred': preds.cpu().numpy()})
+                                       'pred_score': score.cpu().numpy(),
+                                       'pred_class': preds.cpu().numpy()})
 
             if self.num_classes == 1:  # binary
                 results_df['prob'] = score.cpu().numpy()
@@ -318,9 +319,6 @@ class MILModel(pl.LightningModule):
                                                                                       labels=labels.cpu().numpy())
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
-                    self.log('final_val_{}_precision'.format(class_n), precision[i])
-                    self.log('final_val_{}_recall'.format(class_n), recall[i])
-                    self.log('final_val_{}_f1'.format(class_n), f1[i])
 
             print(results_df)
             results_save_path = os.path.join(self.run_dir, 'results.csv')
