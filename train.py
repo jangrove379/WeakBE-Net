@@ -266,7 +266,12 @@ class MILModel(pl.LightningModule):
         auc_per_class = []
         for i in range(len(self.class_labels)):
             binary_true = (labels == i).astype(int)
-            auc_score = roc_auc_score(binary_true, score)
+
+            if i == 0:
+                auc_score = roc_auc_score(binary_true, -score)  # if NDBE is seen as the positive class
+            else:
+                auc_score = roc_auc_score(binary_true, score)
+
             auc_per_class.append(auc_score)
 
         # compute precision recall and f1 per class
@@ -309,7 +314,7 @@ class MILModel(pl.LightningModule):
                                        'pred_class': preds.cpu().numpy()})
 
             if self.num_classes == 1:  # binary
-                results_df['prob'] = score.cpu().numpy()
+                results_df['pred_score'] = score.cpu().numpy()
                 self.compute_roc_curve(labels.cpu().numpy().astype(int), score.cpu().numpy())
                 self.log('final_val_accuracy', accuracy_score(y_true=labels.cpu().numpy(), y_pred=preds.cpu().numpy()))
             else:  # multi-class
