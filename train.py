@@ -127,6 +127,27 @@ def train(args):
     print(f"Accuracy: {np.mean(best_acc_scores):.2f} ± {np.std(best_acc_scores):.2f}")
 
 
+def process_labels(cons_labels, rater_labels, method="random"):
+    """
+    Processes a batch of labels by selecting randomly, averaging.
+    """
+    batch_size = cons_labels.shape[0]
+    selected_labels = []
+
+    for i in range(batch_size):
+        valid_rater_labels = rater_labels[i][(rater_labels[i] != 3) & (rater_labels[i] != 4)]  # 3: not rated, 4: IND
+        valid_labels = torch.cat([cons_labels[i].unsqueeze(0), valid_rater_labels])
+
+        if method == 'random':
+            random_idx = torch.randint(0, len(valid_labels), (1,))
+            selected_labels.append(valid_labels[random_idx])
+        elif method == 'average':
+            avg_label = valid_labels.float().mean()
+            selected_labels.append(avg_label)
+
+    return torch.stack(selected_labels).squeeze()
+
+
 class MILModel(pl.LightningModule):
     """ Implements a standard MIL model for regression.
     """
@@ -143,6 +164,7 @@ class MILModel(pl.LightningModule):
                  run_dir=None):
 
         super(MILModel, self).__init__()
+        self.class_weights = class_weights
         self.num_classes = num_classes
         self.output_dim = output_dim
         self.model = AttentionMIL(feature_dim=feature_dim,
@@ -197,7 +219,6 @@ class MILModel(pl.LightningModule):
         masks: (batch_size, bag_size)
         """
         # only consider bags with valid instances
-        assert (len(logits) > 0)
         valid_bags = masks.sum(dim=1) > 0
         valid_predictions = logits[valid_bags]
         valid_labels = labels[valid_bags]
@@ -207,29 +228,31 @@ class MILModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         bag_features = batch["features"]
         masks = batch["mask"]
-        labels = batch["cons_label"]
-        
+        cons_labels = batch["cons_label"]
+        raters_labels = batch["rater_labels"]
+        train_labels = process_labels(cons_labels, raters_labels, method='average')
+
         pred_score, _ = self(bag_features, masks)
-        loss = self.compute_loss(pred_score, labels, masks)
+        loss = self.compute_loss(pred_score, train_labels, masks)
         pred_class = torch.where(pred_score < 0.5, 0,
                                  torch.where(pred_score < 1.5, 1, 2))
 
         self.log('train_loss', loss, on_step=True, on_epoch=True)
         for name, metric in self.metrics.items():
-            self.log('train_{}'.format(name), metric(pred_class, labels), on_step=True, on_epoch=True)
+            self.log('train_{}'.format(name), metric(pred_class, cons_labels), on_step=True, on_epoch=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         bag_features = batch["features"]
         masks = batch["mask"]
-        labels = batch["cons_label"]
+        cons_labels = batch["cons_label"]
         block_ids = batch["block_id"]
         p53_file_available = batch["p53_file_available"]
         p53_labels = batch["p53_label"]
 
         pred_score, _ = self(bag_features, masks)
-        loss = self.compute_loss(pred_score, labels, masks)
+        loss = self.compute_loss(pred_score, cons_labels, masks)
         pred_class = torch.where(pred_score < 0.5, 0,
                                  torch.where(pred_score < 1.5, 1, 2))
 
@@ -237,14 +260,14 @@ class MILModel(pl.LightningModule):
         if self.final_validation:
             self.val_pred_score.append(pred_score)
             self.val_pred_class.append(pred_class)
-            self.val_labels.append(labels)
+            self.val_labels.append(cons_labels)
             self.val_block_ids.append(block_ids)
             self.val_p53_available.append(p53_file_available)
             self.val_p53_labels.append(p53_labels)
         else:
             self.log('val_loss', loss, prog_bar=True)
             for name, metric in self.metrics.items():
-                self.log('val_{}'.format(name), metric(pred_class, labels), prog_bar=True)
+                self.log('val_{}'.format(name), metric(pred_class, cons_labels), prog_bar=True)
 
         return loss
 
@@ -336,7 +359,7 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='regression_0.5mpp', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='regression_average_MSE', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_no_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
@@ -344,7 +367,7 @@ if __name__ == '__main__':
     parser.add_argument("--use_p53", type=bool, default=True, help="whether use p53 features if available")
     parser.add_argument("--use_class_weights", type=bool, default=True, help="whether to use frequency based weights")
     parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="the size of mini batches")
+    parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
     parser.add_argument("--lr", type=float, default=1e-5, help="initial the learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay (L2)")
@@ -353,7 +376,7 @@ if __name__ == '__main__':
     parser.add_argument("--exp_dir", type=str,
                         default='/home/mbotros/experiments/lans_weaklysupervised/')
     parser.add_argument("--features_dir", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_0.5mpp')
+                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53')
     parser.add_argument("--label_file", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels_with_ind.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")

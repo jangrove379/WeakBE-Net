@@ -109,11 +109,11 @@ class BagDataset:
         self.labels = self.update_individual_labels()
 
         # filter out where we don't have both a file and a label
-        self.block_id_files = [f.split('HE')[0][:-1] for f in self.HE_feature_files]
+        self.block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
         self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files]
 
         # get coordinates and labels
-        self.coordinates = [np.load(os.path.join(features_dir, b + '-HE-coords.npy')) for b in self.block_ids]
+        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
         self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.float32)
                             for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
@@ -132,7 +132,7 @@ class BagDataset:
 
         for block_id in self.block_ids:
 
-            he_features = torch.load(os.path.join(features_dir, block_id + '-HE-features.pt'))
+            he_features = torch.load(os.path.join(features_dir, block_id + 'HE-features.pt'))
 
             # check if p53 features are available for this block
             matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
@@ -176,8 +176,6 @@ class BagDataset:
         4 = HGD         => 2
         """
         labels = self.labels.copy()
-
-        # Get all columns after 'dx'
         columns_after_dx = labels.columns[labels.columns.get_loc("p53") + 1:]
         labels[columns_after_dx] = labels[columns_after_dx].replace({0: 3, 1: 0, 2: 4, 3: 1, 4: 2})
 
@@ -203,13 +201,13 @@ class BagDataset:
     def __getitem__(self, idx):
         """Retrieve a single sample from the dataset."""
         return {
-            "features": self.features[idx],                       # (num_patches, feature_dim)
-            "cons_label": self.cons_labels[idx],                  # (num_patches, 1) Consensus label
-            "coordinates": self.coordinates[idx],                 # (num_patches, 2) Patch (x, y) coordinates
-            "block_id": self.block_ids[idx],                      # Block identifier
-            "p53_file_available": self.p53_file_available[idx],   # Boolean indicating p53 file availability
-            "p53_label": self.p53_labels[idx],                    # p53 mutation status label
-            "rater_labels": self.rater_labels[idx]                # (num_patches, 20) Individual rater labels
+            "features": self.features[idx],                      # (num_patches, feature_dim)
+            "cons_label": self.cons_labels[idx],                 # (num_patches, 1) Consensus label
+            "coordinates": self.coordinates[idx],                # (num_patches, 2) Patch (x, y) coordinates
+            "block_id": self.block_ids[idx],                     # Block identifier
+            "p53_file_available": self.p53_file_available[idx],  # Boolean indicating p53 file availability
+            "p53_label": self.p53_labels[idx],                   # p53 mutation status label
+            "rater_labels": self.rater_labels[idx]               # (num_patches, 20) Individual rater labels
         }
 
 
