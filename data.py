@@ -84,7 +84,7 @@ class BagDataset:
 
     def __init__(self, features_dir, label_file, use_p53, include_ind=False, binary=False):
         """
-        Initializes the BagDataset object by loading features, coordinates, and labels
+        Initializes the BagDataset by loading features, coordinates, and labels
         from the specified directory and label file.
 
         Args:
@@ -178,7 +178,6 @@ class BagDataset:
         labels = self.labels.copy()
         columns_after_dx = labels.columns[labels.columns.get_loc("p53") + 1:]
         labels[columns_after_dx] = labels[columns_after_dx].replace({0: 3, 1: 0, 2: 4, 3: 1, 4: 2})
-
         return labels
 
     def update_p53_labels(self):
@@ -202,48 +201,13 @@ class BagDataset:
         """Retrieve a single sample from the dataset."""
         return {
             "features": self.features[idx],                      # (num_patches, feature_dim)
-            "cons_label": self.cons_labels[idx],                 # (num_patches, 1) Consensus label
+            "cons_label": self.cons_labels[idx],                 # (1,) Consensus label
             "coordinates": self.coordinates[idx],                # (num_patches, 2) Patch (x, y) coordinates
             "block_id": self.block_ids[idx],                     # Block identifier
             "p53_file_available": self.p53_file_available[idx],  # Boolean indicating p53 file availability
             "p53_label": self.p53_labels[idx],                   # p53 mutation status label
-            "rater_labels": self.rater_labels[idx]               # (num_patches, 20) Individual rater labels
+            "rater_labels": self.rater_labels[idx]               # (20) Individual rater labels
         }
-
-
-def collate_fn(batch):
-    """ Makes sure batches are the same length by padding. A mask is used to keep track of padded instances.
-    """
-    features, cons_labels, coords, block_ids, p53_avail, p53_labels, rater_labels = zip(*[
-        (sample["features"],
-         sample["cons_label"],
-         sample["coordinates"],
-         sample["block_id"],
-         sample["p53_file_available"],
-         sample["p53_label"],
-         sample["rater_labels"]) for sample in batch])
-
-    max_patches = max(f.shape[0] for f in features)
-    padded_features = []
-    masks = []
-
-    for f in features:
-        pad_size = max_patches - f.shape[0]
-        padded = F.pad(f, (0, 0, 0, pad_size))
-        mask = torch.cat([torch.ones(f.shape[0]), torch.zeros(pad_size)])
-        padded_features.append(padded)
-        masks.append(mask)
-
-    return {
-        "features": torch.stack(padded_features),
-        "mask": torch.stack(masks),
-        "cons_label": torch.tensor(cons_labels),
-        "coordinates": coords,
-        "block_id": block_ids,
-        "p53_file_available": p53_avail,
-        "p53_label": torch.tensor(p53_labels),
-        "rater_labels": torch.stack(rater_labels)
-    }
 
 
 def get_class_weights(dataset):
@@ -257,8 +221,8 @@ def get_class_weights(dataset):
         class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
     """
     labels = [sample["cons_label"].item() for sample in dataset]
-    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels),
-                                 dtype=torch.float)
+    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels), dtype=torch.float)
+
     return class_weights
 
 
@@ -292,7 +256,7 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
         print("Class weights train_subset: {}".format(class_weights))
         print("Size val_subset: {}".format(len(val_subset)))
 
-        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
 
         yield fold, train_loader, val_loader, class_weights

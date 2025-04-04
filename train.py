@@ -42,6 +42,9 @@ def train(args):
     print('Using class weights: {}'.format(args.use_class_weights))
     print('Using features from: {}'.format(args.features_dir))
 
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # load config for extraction
     with open(os.path.join(args.features_dir, 'extract_config.yaml')) as file:
         feat_extraction_config = yaml.safe_load(file)
@@ -127,25 +130,25 @@ def train(args):
     print(f"Accuracy: {np.mean(best_acc_scores):.2f} ± {np.std(best_acc_scores):.2f}")
 
 
-def process_labels(cons_labels, rater_labels, method="random"):
+def process_labels(cons_labels, rater_labels, method="random", add_consensus=False):
     """
-    Processes a batch of labels by selecting randomly, averaging.
+    Processes a single sample's labels by selecting randomly, averaging, or returning all valid labels.
     """
-    batch_size = cons_labels.shape[0]
-    selected_labels = []
+    rater_labels = rater_labels.squeeze(0)
+    valid_rater_labels = rater_labels[(rater_labels != 3) & (rater_labels != 4)]  # exclude not rated (3) and IND (4)
 
-    for i in range(batch_size):
-        valid_rater_labels = rater_labels[i][(rater_labels[i] != 3) & (rater_labels[i] != 4)]  # 3: not rated, 4: IND
-        valid_labels = torch.cat([cons_labels[i].unsqueeze(0), valid_rater_labels])
+    if add_consensus:
+        valid_labels = torch.cat([cons_labels, valid_rater_labels])
+    else:
+        valid_labels = valid_rater_labels
 
-        if method == 'random':
-            random_idx = torch.randint(0, len(valid_labels), (1,))
-            selected_labels.append(valid_labels[random_idx])
-        elif method == 'average':
-            avg_label = valid_labels.float().mean()
-            selected_labels.append(avg_label)
-
-    return torch.stack(selected_labels).squeeze()
+    if method == 'random':
+        random_idx = torch.randint(0, len(valid_labels), (1,))
+        return valid_labels[random_idx].unsqueeze(0)
+    elif method == 'average':
+        return valid_labels.float().mean().unsqueeze(0)
+    elif method == 'all':
+        return valid_labels.float()
 
 
 class MILModel(pl.LightningModule):
@@ -208,32 +211,19 @@ class MILModel(pl.LightningModule):
         self.final_validation = False
         self.run_dir = run_dir
 
-    def forward(self, bag_features, mask):
-        logits, attn_weights = self.model(bag_features.to(torch.float32), mask)
-        return logits.squeeze(0), attn_weights
-
-    def compute_loss(self, logits, labels, masks):
-        """ Computes the loss only for valid bags (having at least one non-padded instance).
-        logits: (batch_size)
-        labels: (batch_size)
-        masks: (batch_size, bag_size)
-        """
-        # only consider bags with valid instances
-        valid_bags = masks.sum(dim=1) > 0
-        valid_predictions = logits[valid_bags]
-        valid_labels = labels[valid_bags]
-        loss = self.criterion(valid_predictions, valid_labels)
-        return loss
+    def forward(self, bag_features):
+        logits = self.model(bag_features.to(torch.float32))
+        return logits.squeeze(0)
 
     def training_step(self, batch, batch_idx):
         bag_features = batch["features"]
-        masks = batch["mask"]
         cons_labels = batch["cons_label"]
         raters_labels = batch["rater_labels"]
-        train_labels = process_labels(cons_labels, raters_labels, method='average')
+        target = process_labels(cons_labels, raters_labels, method='all', add_consensus=False)
 
-        pred_score, _ = self(bag_features, masks)
-        loss = self.compute_loss(pred_score, train_labels, masks)
+        pred_score = self(bag_features)
+
+        loss = self.criterion(pred_score.expand_as(target), target)
         pred_class = torch.where(pred_score < 0.5, 0,
                                  torch.where(pred_score < 1.5, 1, 2))
 
@@ -245,14 +235,16 @@ class MILModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         bag_features = batch["features"]
-        masks = batch["mask"]
         cons_labels = batch["cons_label"]
         block_ids = batch["block_id"]
         p53_file_available = batch["p53_file_available"]
         p53_labels = batch["p53_label"]
+        raters_labels = batch["rater_labels"]
+        target = process_labels(cons_labels, raters_labels, method='all', add_consensus=False)
 
-        pred_score, _ = self(bag_features, masks)
-        loss = self.compute_loss(pred_score, cons_labels, masks)
+        pred_score = self(bag_features)
+
+        loss = self.criterion(pred_score.expand_as(target), target)
         pred_class = torch.where(pred_score < 0.5, 0,
                                  torch.where(pred_score < 1.5, 1, 2))
 
@@ -322,7 +314,7 @@ class MILModel(pl.LightningModule):
             score = torch.cat(self.val_pred_score)
             labels = torch.cat(self.val_labels)
             p53_labels = torch.cat(self.val_p53_labels)
-            p53_available = [item for tup in self.val_p53_available for item in tup]
+            p53_available = [item.cpu().numpy() for tup in self.val_p53_available for item in tup]
             block_ids = [item for tup in self.val_block_ids for item in tup]
 
             print('Final evaluation on: {} samples'.format(len(preds)))
@@ -359,15 +351,15 @@ class MILModel(pl.LightningModule):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run_name", type=str, default='regression_average_MSE', help="the name of this experiment")
+    parser.add_argument("--run_name", type=str, default='ABMIL_regression_please_all_raters-T3', help="the name of this experiment")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--project_name", type=str, default='WeakBE-Net_no_ind', help="the name of this project")
     parser.add_argument("--binary", type=bool, default=False, help="whether to run in binary setup")
     parser.add_argument("--include_ind", type=bool, default=False, help="whether to include IND cases")
     parser.add_argument("--use_p53", type=bool, default=True, help="whether use p53 features if available")
     parser.add_argument("--use_class_weights", type=bool, default=True, help="whether to use frequency based weights")
-    parser.add_argument("--nr_epochs", type=int, default=1500, help="the number of epochs")
-    parser.add_argument("--batch_size", type=int, default=64, help="the size of mini batches")
+    parser.add_argument("--nr_epochs", type=int, default=150, help="the number of epochs")
+    parser.add_argument("--batch_size", type=int, default=1, help="the size of mini batches")
     parser.add_argument("--hidden_dim", type=int, default=16, help="hidden dimension")
     parser.add_argument("--lr", type=float, default=1e-5, help="initial the learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay (L2)")

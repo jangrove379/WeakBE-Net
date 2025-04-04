@@ -16,18 +16,15 @@ class AttentionMIL(nn.Module):
         )
         self.classifier = nn.Linear(feature_dim, output_dim)
 
-    def forward(self, bag, mask):
-        """ Classic AttentionMIL, using masking to disregard padded instances.
+    def forward(self, bag):
+        """
         Args:
             bag: (batch_size, bag_size, feature_dim)
-            mask: (batch_size, bag_size)
         Returns:
             logits: (batch_size)
-            attn_weights: (batch_size, bag_size)
         """
-        attn_weights = self.attention(bag).squeeze()
-        attn_weights = attn_weights.masked_fill(mask == 0, float('-inf'))            # mask out padded instances
-        attn_weights = F.softmax(attn_weights, dim=1)
-        weighted_features = torch.sum(bag * attn_weights.unsqueeze(-1), dim=1)
-        logits = self.classifier(weighted_features).squeeze()
-        return logits, attn_weights
+        attn_weights = self.attention(bag).squeeze(-1)  # (batch_size, bag_size)
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        weighted_features = torch.sum(bag * attn_weights.unsqueeze(-1), dim=1)  # (batch_size, feature_dim)
+        pred = self.classifier(weighted_features)
+        return pred
