@@ -114,8 +114,9 @@ class BagDataset:
 
         # get coordinates and labels
         self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
-        self.cons_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.float32)
-                            for b in self.block_ids]
+        self.cons_labels = [
+            torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.float32)
+            for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
                            for b in self.block_ids]
         self.rater_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
@@ -200,13 +201,13 @@ class BagDataset:
     def __getitem__(self, idx):
         """Retrieve a single sample from the dataset."""
         return {
-            "features": self.features[idx],                      # (num_patches, feature_dim)
-            "cons_label": self.cons_labels[idx],                 # (1,) Consensus label
-            "coordinates": self.coordinates[idx],                # (num_patches, 2) Patch (x, y) coordinates
-            "block_id": self.block_ids[idx],                     # Block identifier
+            "features": self.features[idx],  # (num_patches, feature_dim)
+            "cons_label": self.cons_labels[idx],  # (1,) Consensus label
+            "coordinates": self.coordinates[idx],  # (num_patches, 2) Patch (x, y) coordinates
+            "block_id": self.block_ids[idx],  # Block identifier
             "p53_file_available": self.p53_file_available[idx],  # Boolean indicating p53 file availability
-            "p53_label": self.p53_labels[idx],                   # p53 mutation status label
-            "rater_labels": self.rater_labels[idx]               # (20) Individual rater labels
+            "p53_label": self.p53_labels[idx],  # p53 mutation status label
+            "rater_labels": self.rater_labels[idx]  # (20) Individual rater labels
         }
 
 
@@ -221,9 +222,31 @@ def get_class_weights(dataset):
         class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
     """
     labels = [sample["cons_label"].item() for sample in dataset]
-    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels), dtype=torch.float)
+    class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels),
+                                 dtype=torch.float)
 
     return class_weights
+
+
+def process_labels(cons_labels, rater_labels, method="random", add_consensus=False):
+    """
+    Processes a single sample's labels by selecting randomly, averaging, or returning all valid labels.
+    """
+    rater_labels = rater_labels.squeeze(0)
+    valid_rater_labels = rater_labels[(rater_labels != 3) & (rater_labels != 4)]  # exclude not rated (3) and IND (4)
+
+    if add_consensus:
+        valid_labels = torch.cat([cons_labels, valid_rater_labels])
+    else:
+        valid_labels = valid_rater_labels
+
+    if method == 'random':
+        random_idx = torch.randint(0, len(valid_labels), (1,))
+        return valid_labels[random_idx].unsqueeze(0).float()
+    elif method == 'average':
+        return valid_labels.float().mean().unsqueeze(0)
+    elif method == 'all':
+        return valid_labels.float()
 
 
 def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):

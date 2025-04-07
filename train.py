@@ -22,7 +22,7 @@ from torchmetrics.classification import (
 )
 
 from aggregators.abmil import AttentionMIL
-from data import BagDataset, get_dataloaders
+from data import BagDataset, get_dataloaders, process_labels
 
 
 def train(args):
@@ -128,27 +128,6 @@ def train(args):
     # print average over folds
     print(f"AUC: {np.mean(best_auc_scores):.2f} ± {np.std(best_auc_scores):.2f}")
     print(f"Accuracy: {np.mean(best_acc_scores):.2f} ± {np.std(best_acc_scores):.2f}")
-
-
-def process_labels(cons_labels, rater_labels, method="random", add_consensus=False):
-    """
-    Processes a single sample's labels by selecting randomly, averaging, or returning all valid labels.
-    """
-    rater_labels = rater_labels.squeeze(0)
-    valid_rater_labels = rater_labels[(rater_labels != 3) & (rater_labels != 4)]  # exclude not rated (3) and IND (4)
-
-    if add_consensus:
-        valid_labels = torch.cat([cons_labels, valid_rater_labels])
-    else:
-        valid_labels = valid_rater_labels
-
-    if method == 'random':
-        random_idx = torch.randint(0, len(valid_labels), (1,))
-        return valid_labels[random_idx].unsqueeze(0)
-    elif method == 'average':
-        return valid_labels.float().mean().unsqueeze(0)
-    elif method == 'all':
-        return valid_labels.float()
 
 
 class MILModel(pl.LightningModule):
