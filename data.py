@@ -115,7 +115,7 @@ class BagDataset:
         # get coordinates and labels
         self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
         self.cons_labels = [
-            torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.float32)
+            torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
             for b in self.block_ids]
         self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
                            for b in self.block_ids]
@@ -228,7 +228,7 @@ def get_class_weights(dataset):
     return class_weights
 
 
-def process_labels(cons_labels, rater_labels, method="random", add_consensus=False):
+def process_labels(cons_labels, rater_labels, method="random", add_consensus=False, path_id=None):
     """
     Processes a single sample's labels by selecting randomly, averaging, or returning all valid labels.
     """
@@ -247,6 +247,13 @@ def process_labels(cons_labels, rater_labels, method="random", add_consensus=Fal
         return valid_labels.float().mean().unsqueeze(0)
     elif method == 'all':
         return valid_labels.float()
+    
+    elif method == "path":
+        if path_id is None:
+            raise ValueError("path_id is required for method='path'.")
+        
+        valid_path_labels = valid_labels[valid_labels == path_id]
+        
 
 
 def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
@@ -265,8 +272,12 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
             - train_loader (DataLoader): DataLoader for the training subset.
             - val_loader (DataLoader): DataLoader for the validation subset.
             - class_weights (torch.Tensor): Class weights computed from the training subset.
-
     """
+
+    print("....................................")
+    print("dataloaders")
+    print(dataset.rater_labels)
+
     kfold = KFold(n_splits=k_folds, shuffle=True, random_state=seed)
 
     for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
@@ -280,6 +291,6 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
         print("Size val_subset: {}".format(len(val_subset)))
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+        val_loader = DataLoader(val_subset, batch_size=batch_size,  shuffle=False)
 
         yield fold, train_loader, val_loader, class_weights
