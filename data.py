@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import KFold
 from sklearn.utils.class_weight import compute_class_weight
 
-
 def filter_image_files(image_files, stain='HE'):
     """  Filters and selects representative image files for each unique block identifier.
     Ensures that only one file per block is returned, currently just the first available match
@@ -82,7 +81,7 @@ class BagDataset:
     instances (patch-level features).
     """
 
-    def __init__(self, features_dir, label_file, use_p53, include_ind=False, binary=False):
+    def __init__(self, features_dir, label_file, use_p53, path_id, include_ind=False, binary=False):
         """
         Initializes the BagDataset by loading features, coordinates, and labels
         from the specified directory and label file.
@@ -112,22 +111,62 @@ class BagDataset:
         self.block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
         self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files]
 
-        # get coordinates and labels
-        self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
-        self.cons_labels = [
-            torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
-            for b in self.block_ids]
-        self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
-                           for b in self.block_ids]
-        self.rater_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
-                                                                                        self.labels.columns.get_loc(
-                                                                                            'p53') + 1:]].values.flatten(),
-                                          dtype=torch.long)
-                             for b in self.block_ids]
+        # for intra-rater agreement, filter out instances without a label
+        if path_id is not None:
+            path_id = path_id + 2 # +2 because block_id, dx, and p53 are included but path_id is supposed to NOT be 0-indexed
+            mask = ~self.labels.iloc[:, path_id].isin([3, 4])
+            valid = self.labels.loc[mask]
+            valid = valid[valid['block_id'].isin(self.block_ids)].reset_index(drop=True)
+            self.block_ids = valid['block_id'].tolist()
+
+            # keep = [i for i, r in enumerate(self.labels.iloc[:,path_id]) if ((r != 3) & (r != 4))]
+
+            # self.block_ids = [self.block_ids[i] for i in keep if i < len(self.block_ids)]
+            
+            # # print([torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
+            # #                                                                             self.labels.columns.get_loc(
+            # #                                                                                 'p53') + 1:]].values.flatten(),
+            # #                               dtype=torch.long)
+            # #                  for b in self.block_ids])
+
+            self.coordinates = [
+                np.load(os.path.join(features_dir, f"{bid}HE-coords.npy"))
+                for bid in self.block_ids
+            ]
+
+            self.cons_labels = [
+                torch.tensor(dx, dtype=torch.long)
+                for dx in valid["dx"].tolist()
+            ]
+
+            self.p53_labels = [
+                torch.tensor(p, dtype=torch.long)
+                for p in valid["p53"].tolist()
+            ]
+
+            rater_start = valid.columns.get_loc("p53") + 1
+            self.rater_labels = [
+                torch.tensor(row[rater_start:].astype(int).values, dtype=torch.long)
+                for _, row in valid.iterrows()
+            ]
+        else:
+            # get coordinates and labels
+            self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
+            self.cons_labels = [
+                torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
+                for b in self.block_ids]
+            self.p53_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'p53'].iat[0], dtype=torch.long)
+                            for b in self.block_ids]
+            self.rater_labels = [torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
+                                                                                            self.labels.columns.get_loc(
+                                                                                                'p53') + 1:]].values.flatten(),
+                                            dtype=torch.long)
+                                for b in self.block_ids]
 
         if binary:
             self.cons_labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in
                                 self.cons_labels]
+            
         self.features = []
         self.p53_file_available = []
 
@@ -147,8 +186,12 @@ class BagDataset:
                 self.features.append(he_features)
                 self.p53_file_available.append(0)
 
+
         print('{} of which {} have p53 features available'.format(len(self.block_ids), sum(self.p53_file_available)))
         print('Using p53 features: {}'.format(self.use_p53))
+        for i in range(1, 20):
+            print('Block ID:', self.block_ids[i], 'tensor: ', self.rater_labels[i])
+
 
     def update_consensus_labels(self, include_ind=False):
         """
@@ -242,18 +285,18 @@ def process_labels(cons_labels, rater_labels, method="random", add_consensus=Fal
 
     if method == 'random':
         random_idx = torch.randint(0, len(valid_labels), (1,))
-        return valid_labels[random_idx].unsqueeze(0).float()
+        return valid_labels[random_idx].unsqueeze(0).long()
     elif method == 'average':
         return valid_labels.float().mean().unsqueeze(0)
     elif method == 'all':
-        return valid_labels.float()
-    
-    elif method == "path":
+        return valid_labels.float()     
+    elif method == 'path':
         if path_id is None:
-            raise ValueError("path_id is required for method='path'.")
-        
-        valid_path_labels = valid_labels[valid_labels == path_id]
-        
+            raise ValueError("path_id must be provided when method is 'path'")
+        print("all: ", rater_labels)
+        print("path_id: ", path_id)
+        print("output: ", rater_labels[path_id-1])
+        return rater_labels[path_id-1].unsqueeze(0).long()
 
 
 def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
@@ -274,10 +317,6 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
             - class_weights (torch.Tensor): Class weights computed from the training subset.
     """
 
-    print("....................................")
-    print("dataloaders")
-    print(dataset.rater_labels)
-
     kfold = KFold(n_splits=k_folds, shuffle=True, random_state=seed)
 
     for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
@@ -291,6 +330,6 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42):
         print("Size val_subset: {}".format(len(val_subset)))
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=batch_size,  shuffle=False)
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
 
         yield fold, train_loader, val_loader, class_weights

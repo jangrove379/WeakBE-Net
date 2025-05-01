@@ -37,7 +37,8 @@ def train(args):
         label_file=args.label_file,
         use_p53=args.use_p53,
         binary=args.binary,
-        include_ind=args.include_ind)
+        include_ind=args.include_ind,
+        path_id=args.path_id)
 
     print('Total length dataset: {}'.format(len(dataset)))
     labels = np.array(dataset.cons_labels)
@@ -203,15 +204,13 @@ class MILModel(pl.LightningModule):
         bag_features = batch["features"]
         cons_labels = batch["cons_label"]
         raters_labels = batch["rater_labels"]
-
         print(raters_labels)
-        # target = process_labels(cons_labels, raters_labels, method='all', add_consensus=False)
-        target = cons_labels.long()
-        target = target if self.output_dim > 1 else target.float()      
+        
+        target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
+        # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
         loss = self.criterion(logits, target)
-        # pred_class = logits.argmax(dim=0).unsqueeze(0)
 
         self.log('train_loss', loss, on_step=True, on_epoch=True)
         for name, metric in self.metrics.items():
@@ -227,12 +226,13 @@ class MILModel(pl.LightningModule):
         p53_labels = batch["p53_label"]
         raters_labels = batch["rater_labels"]
 
-        print(rater_labels)
-        # target = process_labels(cons_labels, raters_labels, method='all', add_consensus=False)
-        target = cons_labels.long()
-        target = target if self.output_dim > 1 else target.float()      
+        target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
+        print("target: ", target)
+        
+        # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
+        print("logits: ", logits)
         loss = self.criterion(logits, target)
 
         if self.output_dim == 1:
@@ -369,6 +369,7 @@ if __name__ == '__main__':
                         default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels_with_ind.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True)
+    parser.add_argument("--path_id", type=int, default=None, help="path id for intra-rater agreement assessment")
     args = parser.parse_args()
 
     train(args)
