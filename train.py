@@ -185,7 +185,15 @@ class MILModel(pl.LightningModule):
             self.conf_matrix = ConfusionMatrix(num_classes=self.output_dim, task="multiclass")
             self.class_labels = ['NDBE', 'IND', 'LGD', 'HGD']
 
+        # training epoch tracking
+        self.training_losses = []
+        self.fold_val_accuracies = []
+        self.fold_training_curves = []
+        self.fold_convergence_epochs = []
+        self.fold_loss_instabilities = []
+
         # for final validation round: store predictions
+        self.val_logits = []
         self.val_probs = []
         self.val_preds = []
         self.val_labels = []
@@ -204,14 +212,15 @@ class MILModel(pl.LightningModule):
         bag_features = batch["features"]
         cons_labels = batch["cons_label"]
         raters_labels = batch["rater_labels"]
-        print(raters_labels)
         
-        target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
+        label_method = 'path' if args.path_id is not None else 'all'
+        target = process_labels(cons_labels, raters_labels, method=label_method, add_consensus=False, path_id=args.path_id)
         # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
         loss = self.criterion(logits, target)
 
+        self.training_losses.append(loss.detach().cpu().item())
         self.log('train_loss', loss, on_step=True, on_epoch=True)
         for name, metric in self.metrics.items():
             self.log('train_{}'.format(name), metric(logits, target), on_step=True, on_epoch=True)
@@ -226,13 +235,12 @@ class MILModel(pl.LightningModule):
         p53_labels = batch["p53_label"]
         raters_labels = batch["rater_labels"]
 
-        target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
-        print("target: ", target)
+        label_method = 'path' if args.path_id is not None else 'all'
+        target = process_labels(cons_labels, raters_labels, method=label_method, add_consensus=False, path_id=args.path_id)
         
         # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
-        print("logits: ", logits)
         loss = self.criterion(logits, target)
 
         if self.output_dim == 1:
@@ -245,6 +253,7 @@ class MILModel(pl.LightningModule):
 
         # Store predictions if final validation
         if self.final_validation:
+            self.val_logits.append(logits)
             self.val_probs.append(probs)
             self.val_preds.append(preds)
             self.val_labels.append(cons_labels)
@@ -254,7 +263,10 @@ class MILModel(pl.LightningModule):
         else:
             self.log('val_loss', loss, prog_bar=True)
             for name, metric in self.metrics.items():
-                self.log('val_{}'.format(name), metric(preds, target), prog_bar=True)
+                score = metric(preds, target)
+                self.log(f'val_{name}', score, prog_bar=True)
+                if name == 'accuracy':
+                    self.current_val_accuracy = score.detach().cpu().item()
         return loss
 
     def compute_confusion_matrix(self, preds, labels):
@@ -296,6 +308,52 @@ class MILModel(pl.LightningModule):
         plt.savefig(os.path.join(self.run_dir, 'roc_curve.png'))
         plt.close()
 
+    def log_convergence_metrics_fold(self):
+        losses = np.array(self.training_losses)
+        self.fold_training_curves.append(losses)
+
+        # loss variance
+        slopes = np.diff(losses)
+        loss_instability = np.var(slopes)
+        self.fold_loss_instabilities.append(loss_instability)
+
+        # convergence plateau
+        window = 5
+        threshold = 0.001
+        conv_epoch = len(losses)
+        for i in range(len(losses) - window):
+            slope = np.mean(np.diff(losses[i:i+window]))
+            if abs(slope) < threshold:
+                conv_epoch = i + window
+                break
+        self.fold_convergence_epochs.append(conv_epoch)
+
+        # val acc
+        if self.current_val_accuracy is not None:
+            self.fold_val_accuracies.append(self.current_val_accuracy)
+            val_acc = self.current_val_accuracy
+        else:
+            val_acc = None
+
+        wandb.log({
+            "fold/loss_instability": loss_instability,
+            "fold/convergence_epoch": conv_epoch,
+            "fold/val_accuracy": val_acc if self.current_val_accuracy is not None else None
+        })
+
+        self.training_losses.clear()  # reset for next fold
+
+    def on_train_epoch_end(self):
+        if self.fold_val_accuracies:
+            wandb.log({
+                "summary/mean_val_accuracy": np.mean(self.fold_val_accuracies),
+                "summary/val_accuracy_variance": np.var(self.fold_val_accuracies),
+                "summary/mean_loss_instability": np.mean(self.fold_loss_instabilities),
+                "summary/mean_convergence_epoch": np.mean(self.fold_convergence_epochs)
+            })
+
+
+
     def on_validation_epoch_end(self):
         """Compute confusion matrix only at final validation round"""
 
@@ -333,13 +391,16 @@ class MILModel(pl.LightningModule):
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
 
                 for i, class_name in enumerate(self.class_labels):
-                     results_df['prob_{}'.format(class_name)] = probs[:, i].cpu().numpy()
-
-
+                    results_df['prob_{}'.format(class_name)] = probs[:, i].cpu().numpy()
             
+
             results_save_path = os.path.join(self.run_dir, 'results.csv')
             print('Saving results to: {}'.format(results_save_path))
             results_df.to_csv(results_save_path, index=False)
+
+        else:
+            self.log_convergence_metrics_fold()
+
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.wd)

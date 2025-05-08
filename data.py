@@ -293,9 +293,6 @@ def process_labels(cons_labels, rater_labels, method="random", add_consensus=Fal
     elif method == 'path':
         if path_id is None:
             raise ValueError("path_id must be provided when method is 'path'")
-        print("all: ", rater_labels)
-        print("path_id: ", path_id)
-        print("output: ", rater_labels[path_id-1])
         return rater_labels[path_id-1].unsqueeze(0).long()
 
 
