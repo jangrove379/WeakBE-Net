@@ -208,13 +208,16 @@ class MILModel(pl.LightningModule):
         return logits
 
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch):
         bag_features = batch["features"]
         cons_labels = batch["cons_label"]
         raters_labels = batch["rater_labels"]
         
         label_method = 'path' if args.path_id is not None else 'all'
         target = process_labels(cons_labels, raters_labels, method=label_method, add_consensus=False, path_id=args.path_id)
+        
+        if args.path_id is None:
+            target = target[:1].long()
         # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
@@ -227,7 +230,7 @@ class MILModel(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch):
         bag_features = batch["features"]
         cons_labels = batch["cons_label"]
         block_ids = batch["block_id"]
@@ -238,9 +241,13 @@ class MILModel(pl.LightningModule):
         label_method = 'path' if args.path_id is not None else 'all'
         target = process_labels(cons_labels, raters_labels, method=label_method, add_consensus=False, path_id=args.path_id)
         
+        if args.path_id is None: # gets the consensus label
+            target = target[:1].long()
+
         # target = target if self.output_dim > 1 else target.float()      
 
         logits = self(bag_features)
+
         loss = self.criterion(logits, target)
 
         if self.output_dim == 1:
@@ -249,7 +256,6 @@ class MILModel(pl.LightningModule):
         else:
             probs = torch.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
-
 
         # Store predictions if final validation
         if self.final_validation:
@@ -308,50 +314,6 @@ class MILModel(pl.LightningModule):
         plt.savefig(os.path.join(self.run_dir, 'roc_curve.png'))
         plt.close()
 
-    def log_convergence_metrics_fold(self):
-        losses = np.array(self.training_losses)
-        self.fold_training_curves.append(losses)
-
-        # loss variance
-        slopes = np.diff(losses)
-        loss_instability = np.var(slopes)
-        self.fold_loss_instabilities.append(loss_instability)
-
-        # convergence plateau
-        window = 5
-        threshold = 0.001
-        conv_epoch = len(losses)
-        for i in range(len(losses) - window):
-            slope = np.mean(np.diff(losses[i:i+window]))
-            if abs(slope) < threshold:
-                conv_epoch = i + window
-                break
-        self.fold_convergence_epochs.append(conv_epoch)
-
-        # val acc
-        if self.current_val_accuracy is not None:
-            self.fold_val_accuracies.append(self.current_val_accuracy)
-            val_acc = self.current_val_accuracy
-        else:
-            val_acc = None
-
-        wandb.log({
-            "fold/loss_instability": loss_instability,
-            "fold/convergence_epoch": conv_epoch,
-            "fold/val_accuracy": val_acc if self.current_val_accuracy is not None else None
-        })
-
-        self.training_losses.clear()  # reset for next fold
-
-    def on_train_epoch_end(self):
-        if self.fold_val_accuracies:
-            wandb.log({
-                "summary/mean_val_accuracy": np.mean(self.fold_val_accuracies),
-                "summary/val_accuracy_variance": np.var(self.fold_val_accuracies),
-                "summary/mean_loss_instability": np.mean(self.fold_loss_instabilities),
-                "summary/mean_convergence_epoch": np.mean(self.fold_convergence_epochs)
-            })
-
 
 
     def on_validation_epoch_end(self):
@@ -398,8 +360,6 @@ class MILModel(pl.LightningModule):
             print('Saving results to: {}'.format(results_save_path))
             results_df.to_csv(results_save_path, index=False)
 
-        else:
-            self.log_convergence_metrics_fold()
 
 
     def configure_optimizers(self):
