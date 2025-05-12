@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, Dataset
 from sklearn.model_selection import KFold
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -252,6 +252,51 @@ class BagDataset:
             "p53_label": self.p53_labels[idx],  # p53 mutation status label
             "rater_labels": self.rater_labels[idx]  # (20) Individual rater labels
         }
+
+
+class EvalDataset(Dataset):
+    """
+    A lightweight Dataset for evaluation/inference.
+    Only loads features (+ coordinates) and optionally block_ids.
+    """
+
+    def __init__(self, features_dir, use_p53=True):
+        self.HE_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'HE' in f])
+        self.P53_feature_files = sorted([f for f in os.listdir(features_dir) if '.pt' in f and 'P53' in f])
+        self.coord_files = sorted([f for f in os.listdir(features_dir) if '.npy' in f and 'HE' in f])
+        self.use_p53 = use_p53
+        self.features_dir = features_dir
+        self.block_ids = [f.split('-HE')[0] for f in self.HE_feature_files]
+
+        self.samples = []
+        for block_id in self.block_ids:
+            sample = {"block_id": block_id}
+
+            coords_path = os.path.join(features_dir, block_id + '-HE-coords.npy')
+            sample["coordinates"] = np.load(coords_path)
+
+            he_features_path = os.path.join(features_dir, block_id + '-HE-features.pt')
+            he_features = torch.load(he_features_path)
+
+            matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
+
+            if matching_p53 and self.use_p53:
+                p53_features_path = os.path.join(features_dir, matching_p53)
+                p53_features = torch.load(p53_features_path)
+                features = torch.cat([he_features, p53_features], dim=0)
+            else:
+                features = he_features
+
+            sample["features"] = features
+
+            self.samples.append(sample)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
 
 
 def get_class_weights(dataset):

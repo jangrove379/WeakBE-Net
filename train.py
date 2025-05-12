@@ -346,15 +346,15 @@ class MILModel(pl.LightningModule):
                 auc_per_class, precision, recall, f1 = self.compute_per_class_metrics(preds=preds.cpu().numpy(),
                                                                                       probs=probs.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
+                self.log('validation samples overall', len(labels))
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
                     self.log('final_val_{}_precision'.format(class_n), precision[i])
                     self.log('final_val_{}_recall'.format(class_n), recall[i])
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
+                    self.log('validation_samples_per_class_{}'.format(class_n), len(labels[labels == i].cpu().numpy()))
+                    results_df['prob_{}'.format(class_n)] = probs[:, i].cpu().numpy()
 
-                for i, class_name in enumerate(self.class_labels):
-                    results_df['prob_{}'.format(class_name)] = probs[:, i].cpu().numpy()
-            
 
             results_save_path = os.path.join(self.run_dir, 'results.csv')
             print('Saving results to: {}'.format(results_save_path))
