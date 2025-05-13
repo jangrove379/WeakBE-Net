@@ -241,7 +241,7 @@ class MILModel(pl.LightningModule):
         label_method = 'path' if args.path_id is not None else 'all'
         target = process_labels(cons_labels, raters_labels, method=label_method, add_consensus=False, path_id=args.path_id)
         
-        if args.path_id is None: # gets the consensus label
+        if args.path_id is None: # gets the consensus label if no path id is provided
             target = target[:1].long()
 
         # target = target if self.output_dim > 1 else target.float()      
@@ -262,7 +262,7 @@ class MILModel(pl.LightningModule):
             self.val_logits.append(logits)
             self.val_probs.append(probs)
             self.val_preds.append(preds)
-            self.val_labels.append(cons_labels)
+            self.val_labels.append(target)
             self.val_block_ids.append(block_ids)
             self.val_p53_available.append(p53_file_available)
             self.val_p53_labels.append(p53_labels)
@@ -352,7 +352,7 @@ class MILModel(pl.LightningModule):
                     self.log('final_val_{}_precision'.format(class_n), precision[i])
                     self.log('final_val_{}_recall'.format(class_n), recall[i])
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
-                    self.log('validation_samples_per_class_{}'.format(class_n), len(labels[labels == i].cpu().numpy()))
+                    self.log('validation_samples_class_{}'.format(class_n), len(labels[labels == i].cpu().numpy()))
                     results_df['prob_{}'.format(class_n)] = probs[:, i].cpu().numpy()
 
 

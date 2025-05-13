@@ -119,16 +119,6 @@ class BagDataset:
             valid = valid[valid['block_id'].isin(self.block_ids)].reset_index(drop=True)
             self.block_ids = valid['block_id'].tolist()
 
-            # keep = [i for i, r in enumerate(self.labels.iloc[:,path_id]) if ((r != 3) & (r != 4))]
-
-            # self.block_ids = [self.block_ids[i] for i in keep if i < len(self.block_ids)]
-            
-            # # print([torch.tensor(self.labels.loc[self.labels['block_id'] == b, self.labels.columns[
-            # #                                                                             self.labels.columns.get_loc(
-            # #                                                                                 'p53') + 1:]].values.flatten(),
-            # #                               dtype=torch.long)
-            # #                  for b in self.block_ids])
-
             self.coordinates = [
                 np.load(os.path.join(features_dir, f"{bid}HE-coords.npy"))
                 for bid in self.block_ids
