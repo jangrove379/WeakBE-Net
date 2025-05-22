@@ -322,6 +322,7 @@ class MILModel(pl.LightningModule):
         if self.final_validation:
             probs = torch.cat(self.val_probs)
             preds = torch.cat(self.val_preds)
+            logits = torch.cat(self.val_logits)
             labels = torch.cat(self.val_labels)
             p53_labels = torch.cat(self.val_p53_labels)
             p53_available = [item.cpu().numpy() for tup in self.val_p53_available for item in tup]
@@ -336,6 +337,7 @@ class MILModel(pl.LightningModule):
                                        'p53_label': p53_labels.cpu().numpy(),
                                        'p53_available': p53_available,
                                        'pred_class': preds.cpu().numpy()})
+            
 
             if self.output_dim == 1:  # binary
                 results_df['prob'] = probs.cpu().numpy()
@@ -347,14 +349,16 @@ class MILModel(pl.LightningModule):
                                                                                       probs=probs.cpu().numpy(),
                                                                                       labels=labels.cpu().numpy())
                 self.log('validation samples overall', len(labels))
+                results_df["samples"] = len(labels)
                 for i, class_n in enumerate(self.class_labels):
                     self.log('final_val_{}_auc'.format(class_n), auc_per_class[i])
                     self.log('final_val_{}_precision'.format(class_n), precision[i])
                     self.log('final_val_{}_recall'.format(class_n), recall[i])
                     self.log('final_val_{}_f1'.format(class_n), f1[i])
                     self.log('validation_samples_class_{}'.format(class_n), len(labels[labels == i].cpu().numpy()))
+                    results_df['logit_{}'.format(class_n)] = logits[:, i].cpu().numpy()
                     results_df['prob_{}'.format(class_n)] = probs[:, i].cpu().numpy()
-
+                    results_df['validation_samples_class_{}'.format(class_n)] = len(labels[labels == i].cpu().numpy())
 
             results_save_path = os.path.join(self.run_dir, 'results.csv')
             print('Saving results to: {}'.format(results_save_path))
@@ -383,11 +387,11 @@ if __name__ == '__main__':
     parser.add_argument("--drop_out", type=float, default=0.0, help="drop out rate")
     parser.add_argument("--k_folds", type=int, default=5, help="number of folds")
     parser.add_argument("--exp_dir", type=str,
-                        default='/home/jmgrove/experiments')   
+                        default='/data/archief/AMC-data/Barrett/experiments/jans_experiments')   
     parser.add_argument("--features_dir", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53')
     parser.add_argument("--label_file", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels_with_ind.csv')
+                        default='/data/archief/AMC-data/Barrett/LANS/lans_train_labels_with_ind_final.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True)
     parser.add_argument("--path_id", type=int, default=None, help="path id for intra-rater agreement assessment")
