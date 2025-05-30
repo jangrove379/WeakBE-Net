@@ -59,7 +59,7 @@ def train(args):
     best_acc_scores = []
 
     print('Running {} folds total'.format(args.k_folds))
-    for fold, train_loader, val_loader, class_weights in get_dataloaders(dataset,
+    for fold, train_loader, val_loader, _, class_weights, difficulty_weights in get_dataloaders(dataset,
                                                                          k_folds=args.k_folds,
                                                                          batch_size=args.batch_size,
                                                                          seed=args.seed):
