@@ -4,12 +4,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import re
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset, Dataset, random_split
 from sklearn.model_selection import KFold, StratifiedShuffleSplit, StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.preprocessing import MinMaxScaler
 from collections import Counter
+from torch.utils.data import DataLoader, Subset
 
 
 
@@ -85,7 +87,7 @@ class BagDataset:
     instances (patch-level features).
     """
 
-    def __init__(self, features_dir, label_file, use_p53, path_id, include_ind=False, binary=False):
+    def __init__(self, features_dir, label_file, use_p53, path_id, include_ind=False, binary=False, experiment_mode="final_cons"):
         """
         Initializes the BagDataset by loading features, coordinates, and labels
         from the specified directory and label file.
@@ -110,14 +112,14 @@ class BagDataset:
         self.labels = self.update_consensus_labels(include_ind=include_ind)
         self.labels = self.update_p53_labels()
         self.labels = self.update_individual_labels()
-        print("labels", self.labels)
 
         # filter out where we don't have both a file and a label
-        self.block_id_files = [f.split('HE')[0] for f in self.HE_feature_files]
-        self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files]
+        self.block_id_files = [f.split('-HE')[0] for f in self.HE_feature_files]
+        self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files and (int(x.split("-")[1]) <= 1100)]
 
         # for intra-rater agreement, filter out instances without a label
-        if path_id is not None:
+        if (path_id is not None) & ((experiment_mode == "intra") |  (experiment_mode == "final_path")):
+            print("intra/cons if")
             path_id = path_id + 2 # +2 because block_id, dx, and p53 are included but path_id is supposed to NOT be 0-indexed
             mask = ~self.labels.iloc[:, path_id].isin([3, 4])
             valid = self.labels.loc[mask]
@@ -125,7 +127,7 @@ class BagDataset:
             self.block_ids = valid['block_id'].tolist()
 
             self.coordinates = [
-                np.load(os.path.join(features_dir, f"{bid}HE-coords.npy"))
+                np.load(os.path.join(features_dir, f"{bid}-HE-coords.npy"))
                 for bid in self.block_ids
             ]
 
@@ -145,9 +147,10 @@ class BagDataset:
                 for _, row in valid.iterrows()
             ]
 
-        else:
+        elif experiment_mode == 'final_cons':
+            print("final_cons if")
             # get coordinates and labels
-            self.coordinates = [np.load(os.path.join(features_dir, b + 'HE-coords.npy')) for b in self.block_ids]
+            self.coordinates = [np.load(os.path.join(features_dir, b + '-HE-coords.npy')) for b in self.block_ids]
             self.cons_labels = [
                 torch.tensor(self.labels.loc[self.labels['block_id'] == b, 'dx'].iat[0], dtype=torch.long)
                 for b in self.block_ids]
@@ -158,24 +161,28 @@ class BagDataset:
                                                                                                 'p53') + 1:]].values.flatten(),
                                             dtype=torch.long)
                                 for b in self.block_ids]
-        
-        # get case difficulty
-        self.case_difficulty = self.calculate_case_difficulty()
-        self.difficulty = [
-            torch.tensor(self.case_difficulty.loc[self.case_difficulty.index == b].item(), dtype=torch.float64)
-            for b in self.block_ids
-        ]
 
         if binary:
             self.cons_labels = [torch.tensor(0 if label < 1 else 1, dtype=torch.float64).unsqueeze(0) for label in
                                 self.cons_labels]
             
+        #case difficulty
+        temp_diff = self.calculate_case_difficulty()
+        self.difficulty = [
+                torch.tensor(diff, dtype=torch.float64)
+                    for diff in temp_diff.values.to_numpy().flatten()
+                ]
+        self.filtered_difficulty = [
+            torch.tensor(temp_diff.loc[temp_diff.index == b].item(), dtype=torch.float64)
+            for b in self.block_ids
+        ]
+           
         self.features = []
         self.p53_file_available = []
 
         for block_id in self.block_ids:
 
-            he_features = torch.load(os.path.join(features_dir, block_id + 'HE-features.pt'))
+            he_features = torch.load(os.path.join(features_dir, block_id + '-HE-features.pt'))
 
             # check if p53 features are available for this block
             matching_p53 = next((item for item in self.P53_feature_files if block_id + '-' in item), None)
@@ -192,9 +199,6 @@ class BagDataset:
 
         print('{} of which {} have p53 features available'.format(len(self.block_ids), sum(self.p53_file_available)))
         print('Using p53 features: {}'.format(self.use_p53))
-        for i in range(1, 20):
-            print('Block ID:', self.block_ids[i], 'tensor: ', self.rater_labels[i])
-
 
     def update_consensus_labels(self, include_ind=False):
         """
@@ -355,14 +359,7 @@ def get_class_weights(dataset):
     Returns:
         class_weights (torch.Tensor): A tensor containing the class weights, where each weight corresponds to a class label.
     """
-    for sample in dataset:
-        print(type(sample))
-        print(sample)
-        break
 
-
-
-    # print([sample for sample in dataset])
     labels = [sample["cons_label"].item() for sample in dataset]
     class_weights = torch.tensor(compute_class_weight('balanced', classes=np.unique(labels), y=labels),
                                  dtype=torch.float)
@@ -395,62 +392,13 @@ def process_labels(cons_labels, rater_labels, method="random", add_consensus=Fal
         return rater_labels[path_id-1].unsqueeze(0).long()
 
 
-def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42, test = False):
-    """ Splits the dataset into training and validation sets using K-Fold cross-validation
-    and returns corresponding DataLoaders for each fold.
 
-    Args:
-        dataset (torch.utils.data.Dataset): The full dataset to be split.
-        k_folds (int, optional): Number of folds for cross-validation. Default is 5.
-        batch_size (int, optional): Batch size for the DataLoaders. Default is 32.
-        seed (int, optional): Seed for drawing samples.
-
-    Returns:
-         Generator[Tuple[int, DataLoader, DataLoader, DataLoader, torch.Tensor]]: A generator yielding:
-            - fold (int): The current fold number (starting at 1).
-            - train_loader (DataLoader): DataLoader for the training subset.
-            - val_loader (DataLoader): DataLoader for the validation subset.
-            - test_loader (DataLoader): DataLoader for the test subset.
-            - class_weights (torch.Tensor): Class weights computed from the training subset.
+def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42, test_size=0.2, path=None, experiment_mode="final_cons"):
     """
+    Balances the dataset by undersampling based on filtered_difficulty,
+    then performs stratified test split and stratified K-Fold CV.
 
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    generator1 = torch.Generator().manual_seed(seed)
-    train_data, test_data = random_split(dataset, [train_size, test_size], generator=generator1)
-
-
-    kfold = KFold(n_splits=k_folds, shuffle=True, random_state=seed)
-    for fold, (train_idx, val_idx) in enumerate(kfold.split(train_data)):
-        fold = fold + 1
-
-        train_subset = Subset(train_data, train_idx)
-        val_subset = Subset(train_data, val_idx)
-        test_subset = test_data  
-
-        class_weights = get_class_weights(train_subset)
-
-        print("Size train_subset: {}".format(len(train_subset)))
-        print("Class weights train_subset: {}".format(class_weights))
-        print("Size val_subset: {}".format(len(val_subset)))
-        print("Size test_subset: {}".format(len(test_subset)))
-
-        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
-        test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
-
-        yield fold, train_loader, val_loader, test_loader, class_weights, difficulty_weights
-
-    if test == True:
-        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False)
-        yield test_loader
-
-
-def get_dataloaders(dataset, k_folds = 5, batch_size= 32, seed = 42, test_size = 0.2):
-    """
-    Yields DataLoaders for stratified K-fold CV with a stratified test set.
-
-    Returns per fold:
+    Yields per fold:
         fold               : int
         train_loader       : DataLoader
         val_loader         : DataLoader
@@ -459,43 +407,99 @@ def get_dataloaders(dataset, k_folds = 5, batch_size= 32, seed = 42, test_size =
         difficulty_weights : torch.Tensor
     """
 
-    all_difficulties = np.array([d.item() for d in dataset.difficulty])  # shape (N,)
+    if (path is not None) & (experiment_mode == 'intra'):
+        filtered_difficulties = np.array([d.item() for d in dataset.filtered_difficulty])
 
-    sss = StratifiedShuffleSplit(
-        n_splits=1,
-        test_size=test_size,
-        random_state=seed)
+        balanced_subset, balanced_difficulties = undersample_dataset(dataset, filtered_difficulties, seed=seed)
 
-    train_val_idx, test_idx = next(
-        sss.split(np.zeros(len(all_difficulties)), all_difficulties))
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+        train_val_idx, test_idx = next(sss.split(np.zeros(len(balanced_difficulties)), balanced_difficulties))
 
-    test_subset = Subset(dataset, test_idx)
-    train_val_difficulties = all_difficulties[train_val_idx]
+        test_subset = Subset(balanced_subset, test_idx)
+        train_val_difficulties = balanced_difficulties[train_val_idx]
 
-    # -------- Stratified K-Fold on train_val --------
-    skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
+        skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=seed)
+
+        for fold, (tr_idx_local, val_idx_local) in enumerate(skf.split(train_val_idx, train_val_difficulties), start=1):
+            tr_idx_global = [train_val_idx[i] for i in tr_idx_local]
+            val_idx_global = [train_val_idx[i] for i in val_idx_local]
+
+            train_subset = Subset(balanced_subset, tr_idx_global)
+            val_subset   = Subset(balanced_subset, val_idx_global)
+
+            class_weights = get_class_weights(train_subset)
+
+            tr_difficulties = balanced_difficulties[tr_idx_global]
+            counts = Counter(tr_difficulties)
+            total = len(tr_difficulties)
+            inv_freq = {d: total / counts[d] for d in counts}
+            difficulty_weights = torch.tensor([inv_freq[d] for d in tr_difficulties], dtype=torch.float32)
+
+            train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+            val_loader   = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+            test_loader  = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
+
+            yield fold, train_loader, val_loader, test_loader, class_weights, difficulty_weights
+    else:
+        test_idx = [
+            i for i, block_id in enumerate(dataset.block_ids)
+            if 1000 < int(block_id.split("-")[1]) <= 1100
+        ]
+        [
+            print(i, block_id) for i, block_id in enumerate(dataset.block_ids)
+        ]
+        
+        # test_subset = Subset(dataset, test_idx) 
+        train_val_idx = [i for i in range(len(dataset)) if i not in test_idx]
+        train_val_subset = Subset(dataset, train_val_idx)
+ 
+        kfold = KFold(n_splits=k_folds, shuffle=False)
+
+        for fold, (train_idx, val_idx) in enumerate(kfold.split(train_val_subset)):
+            fold = fold + 1
+            train_subset = Subset(train_val_subset, train_idx)
+            val_subset = Subset(train_val_subset, val_idx)
+
+            class_weights = get_class_weights(train_subset)
+
+            print("Size test_subset: {}".format(len(test_idx)))
+            print("Size train_subset: {}".format(len(train_subset)))
+            print("Class weights train_subset: {}".format(class_weights))
+            print("Size val_subset: {}".format(len(val_subset)))
+
+            train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False)
+            val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+
+            yield fold, train_loader, val_loader, None, class_weights, None
+           
 
 
-    for fold, (tr_idx_local, val_idx_local) in enumerate(skf.split(train_val_idx, train_val_difficulties), start=1):
-       
-        tr_idx_global = [train_val_idx[i] for i in tr_idx_local]
-        val_idx_global = [train_val_idx[i] for i in val_idx_local]
+def undersample_dataset(dataset, filtered_difficulties, seed=42):
+    """
+    Undersamples dataset to balance it by difficulty.
 
-        train_subset = Subset(dataset, tr_idx_global)
-        val_subset   = Subset(dataset, val_idx_global)
+    Args:
+        dataset: original dataset
+        filtered_difficulties: np.ndarray of difficulty labels
+        seed: random seed for reproducibility
 
-        class_weights = get_class_weights(train_subset)
+    Returns:
+        balanced_dataset: Subset of original dataset
+        balanced_difficulties: np.ndarray of difficulty labels for the subset
+    """
+    rng = np.random.default_rng(seed)
+    unique_difficulties, counts = np.unique(filtered_difficulties, return_counts=True)
+    min_count = counts.min()
 
-        tr_difficulties = all_difficulties[tr_idx_global]
-        difficulty_counts = Counter(tr_difficulties)
-        total = len(tr_difficulties)
-        inv_freq = {d: total / difficulty_counts[d] for d in difficulty_counts}
-        difficulty_weights = torch.tensor(
-            [inv_freq[d] for d in tr_difficulties],
-            dtype=torch.float32)
+    indices = []
+    for difficulty in unique_difficulties:
+        difficulty_indices = np.where(filtered_difficulties == difficulty)[0]
+        rng.shuffle(difficulty_indices)
+        indices.extend(difficulty_indices[:min_count])
 
-        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
-        test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
+    indices = sorted(indices) 
+    balanced_dataset = Subset(dataset, indices)
+    balanced_difficulties = filtered_difficulties[indices]
 
-        yield (fold, train_loader, val_loader, test_loader, class_weights, difficulty_weights)
+    return balanced_dataset, balanced_difficulties
+
