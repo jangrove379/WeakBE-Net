@@ -405,7 +405,7 @@ if __name__ == '__main__':
     parser.add_argument("--features_dir", type=str,
                         default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2')
     parser.add_argument("--label_file", type=str,
-                        default='notebooks/EDA/data/lans_all_labels.csv')
+                        default='code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True) 
     parser.add_argument("--path_id", type=int, default=None, help="path id for intra-rater agreement assessment")

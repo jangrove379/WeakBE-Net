@@ -119,7 +119,6 @@ class BagDataset:
 
         # for intra-rater agreement, filter out instances without a label
         if (path_id is not None) & ((experiment_mode == "intra") |  (experiment_mode == "final_path")):
-            print("intra/cons if")
             path_id = path_id + 2 # +2 because block_id, dx, and p53 are included but path_id is supposed to NOT be 0-indexed
             mask = ~self.labels.iloc[:, path_id].isin([3, 4])
             valid = self.labels.loc[mask]
@@ -148,7 +147,6 @@ class BagDataset:
             ]
 
         elif experiment_mode == 'final_cons':
-            print("final_cons if")
             # get coordinates and labels
             self.coordinates = [np.load(os.path.join(features_dir, b + '-HE-coords.npy')) for b in self.block_ids]
             self.cons_labels = [
