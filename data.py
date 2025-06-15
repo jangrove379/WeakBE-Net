@@ -370,7 +370,7 @@ def process_labels(cons_labels, rater_labels, method="random", add_consensus=Fal
     Processes a single sample's labels by selecting randomly, averaging, or returning all valid labels.
     """
     rater_labels = rater_labels.squeeze(0)
-    valid_rater_labels = rater_labels[(rater_labels != 3) & (rater_labels != 4)]  # exclude not rated (3) and IND (4)
+    valid_rater_labels = rater_labels[(rater_labels != 3) & (rater_labels != 4)]
 
     if add_consensus:
         valid_labels = torch.cat([cons_labels, valid_rater_labels])
@@ -436,15 +436,12 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42, test_size=0.2, p
             train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
             val_loader   = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
             test_loader  = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
-
+            
             yield fold, train_loader, val_loader, test_loader, class_weights, difficulty_weights
     else:
         test_idx = [
             i for i, block_id in enumerate(dataset.block_ids)
             if 1000 < int(block_id.split("-")[1]) <= 1100
-        ]
-        [
-            print(i, block_id) for i, block_id in enumerate(dataset.block_ids)
         ]
         
         # test_subset = Subset(dataset, test_idx) 
