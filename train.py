@@ -409,7 +409,7 @@ if __name__ == '__main__':
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
     parser.add_argument("--test", type=bool, help="whether to also test", default=True) 
     parser.add_argument("--path_id", type=int, default=None, help="path id for intra-rater agreement assessment")
-    parser.add_argument("--experiment_mode", type=str, default="final_cons", choices=["intra", "final_cons", "final_path"])
+    parser.add_argument("--experiment_mode", type=str, default="final_cons", choices=["intra", "intra1000", "final_cons", "final_path"])
     args = parser.parse_args()
 
     train(args)

@@ -118,7 +118,7 @@ class BagDataset:
         self.block_ids = [x for x in self.labels['block_id'] if x in self.block_id_files and (int(x.split("-")[1]) <= 1100)]
 
         # for intra-rater agreement, filter out instances without a label
-        if (path_id is not None) & ((experiment_mode == "intra") |  (experiment_mode == "final_path")):
+        if (path_id is not None) & ((experiment_mode == "intra") |  (experiment_mode == "final_path") | (experiment_mode == "intra1000")):
             path_id = path_id + 2 # +2 because block_id, dx, and p53 are included but path_id is supposed to NOT be 0-indexed
             mask = ~self.labels.iloc[:, path_id].isin([3, 4])
             valid = self.labels.loc[mask]
@@ -405,8 +405,18 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42, test_size=0.2, p
         difficulty_weights : torch.Tensor
     """
 
-    if (path is not None) & (experiment_mode == 'intra'):
-        filtered_difficulties = np.array([d.item() for d in dataset.filtered_difficulty])
+    if (path is not None) & ((experiment_mode == 'intra') or (experiment_mode == 'intra1000')):
+
+        if experiment_mode == 'intra1000':
+            filtered_indices = [
+                i for i, block_id in enumerate(dataset.block_ids)
+                if int(block_id.split("-")[1]) <= 1000
+            ]
+        else:
+            filtered_indices = list(range(len(dataset)))  # no filtering
+
+        filtered_difficulties = np.array([dataset.filtered_difficulty[i].item() for i in filtered_indices])
+        dataset = Subset(dataset, filtered_indices)
 
         balanced_subset, balanced_difficulties = undersample_dataset(dataset, filtered_difficulties, seed=seed)
 

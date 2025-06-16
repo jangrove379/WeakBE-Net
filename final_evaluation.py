@@ -34,7 +34,7 @@ def load_models(checkpoint_paths, device):
     return models
 
 def get_panel_labels():
-    path_list = args.pathologists
+    path_list = args.panel_pathologists
     path_list_all = list(range(1, 21))
 
     labels = pd.read_csv(args.label_file)
@@ -94,17 +94,17 @@ def get_panel_labels():
 
 
 
-def run_ensemble_evaluation(device, checkpoint_paths, output_dir):
-    if (args.experiment_name_base == "agg" and args.pathologists is None) or (args.experiment_name_base != "agg" and args.pathologists is not None):
+def run_ensemble_evaluation(device):
+    if (args.experiment_name_base == "agg" and args.train_pathologists is None) or (args.experiment_name_base != "agg" and args.train_pathologists is not None):
         raise ValueError("Either both 'experiment_name_base' and 'pathologists' must be provided, or neither.")
 
     if args.experiment_name_base == "agg":
-        checkpoint_paths = [f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_Pathologist_{j}_fold_{i + 1}/best_model.ckpt" for i in range(5) for j in args.pathologists]
+        checkpoint_paths = [f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_Pathologist_{j}_fold_{i + 1}/best_model.ckpt" for i in range(5) for j in args.train_pathologists]
     else:
         checkpoint_paths = [f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_fold_{i+1}/best_model.ckpt" for i in range(5)]
 
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     models = load_models(checkpoint_paths, device)
     dataloader = get_dataloader()
     results = []
@@ -143,7 +143,7 @@ def run_ensemble_evaluation(device, checkpoint_paths, output_dir):
 
     df = pd.DataFrame(results)
     print(df)
-    file_name = os.path.join(output_dir, f"evaluation_results_{args.output_name}.csv")
+    file_name = os.path.join(args.output_dir, f"{args.output_name}.csv")
     df.to_csv(file_name, index=False)
     print(f"Saved predictions to {file_name}")
 
@@ -168,18 +168,10 @@ if __name__ == "__main__":
     parser.add_argument("--label_file", type=str, default='code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv')
     parser.add_argument('--output_dir', type=str, default='/home/jmgrove/experiments/final_eval/', help='Directory to save output results')
     parser.add_argument('--output_name', type=str, required=True, help='Name of the output file')
-    parser.add_argument('--pathologists', type=str, nargs='+', default=None, help='Pathologist indices')
-    args = parser.parse_args()
-
-
-    if args.experiment_name_base == 'agg':
-        output_name = "ensemble_agg"
-    elif args.experiment_name_base == 'final_intra':
-        output_name = "ensemble_final_intra"
-    else:
-        output_name = 'consensus'  
- 
+    parser.add_argument('--panel_pathologists', type=str, nargs='+', required=True, help='Pathologist ids of panel')
+    parser.add_argument('--train_pathologists', type=str, nargs='+', default=None, help='Pathologist indices for training (only used if experiment_name_base is agg)')
+    args = parser.parse_args() 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
-    run_ensemble_evaluation(device, args.output_dir, output_name)
+    run_ensemble_evaluation(device)
