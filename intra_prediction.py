@@ -26,7 +26,7 @@ def load_model(checkpoint_path, device):
     return model
 
 
-def run_evaluation(device, output_dir, experiment_name):
+def run_evaluation(device, output_dir):
     dataset = BagDataset(args.features_dir, use_p53=True, path_id=args.path_id, label_file=args.label_file, experiment_mode="intra")
     _, _, _, dataloader, _, _ = next(get_dataloaders(dataset, path=args.path_id, k_folds=5, batch_size=1, experiment_mode="intra"))
 
@@ -66,14 +66,14 @@ def run_evaluation(device, output_dir, experiment_name):
 
         df = pd.DataFrame(results)
         print(df)
-        file_name = os.path.join(output_dir, f"evaluation_results_{experiment_name}_path_{args.path_id}_fold_{i+1}.csv")
+        file_name = os.path.join(output_dir, f"evaluation_results_{args.experiment_name_base}_path_{args.path_id}_fold_{i+1}.csv")
         df.to_csv(file_name, index=False)
         print(f"Saved predictions to {file_name}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ensemble Evaluation for MIL Models")
-    parser.add_argument('--experiment_name_base', type=str, default='final_intra', help='Base name for the experiment')
+    parser.add_argument('--experiment_name_base', type=str, default='final_intra', choices=["final_intra", "wo1000"], help='Base name for the experiment')
     parser.add_argument('--features_dir', type=str, default="/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2", help='Directory containing features')
     parser.add_argument('--output_dir', type=str, default='/home/jmgrove/experiments/intra/', help='Directory to save output results')
     parser.add_argument('--path_id', type=int, default=None, help='Pathologist index')
