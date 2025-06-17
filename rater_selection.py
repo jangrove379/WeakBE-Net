@@ -9,37 +9,13 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
-from matplotlib import rcParams
-
 
 from prediction import get_alpha_scores 
-
-
-
-
-def setup_plotting():
-    rcParams['font.family'] = 'STIXGeneral'
-    rcParams['font.size'] = 12  # Optional: adjust to match Overleaf's text size
-
-    rcParams.update({
-        "font.size": 12,       
-        "axes.labelsize": 12,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
-        "figure.dpi": 300
-        }
-    )
-    
-    FIG_WIDTH = 7
-    FIG_HEIGHT = FIG_WIDTH * 0.66  
-    FIGSIZE_HORIZONTAL = (FIG_WIDTH, FIG_HEIGHT)
-
-    rcParams['figure.figsize'] = FIGSIZE_HORIZONTAL  
+from visualization import setup_plots
 
 
 def get_rater_selection():
-    setup_plotting()
+    setup_plots()
 
     preds_cluster = pd.DataFrame()
     pathologists = list(range(1, 21))
@@ -245,5 +221,5 @@ if __name__ == "__main__":
     parser.add_argument('--wandb_experiment', type=str, default='jangrove-jg-university-of-amsterdam/WeakBE-Net_no_ind', help='WandB experiment name')
 
     args = parser.parse_args()
-
+    setup_plots()
     get_rater_selection()

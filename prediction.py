@@ -118,7 +118,7 @@ def get_mean_inter_rater_agreement(label_file):
         for j in range(1, 21):
             pairwise_df = data[[f"path_{i}", f"path_{j}"]]
             number_of_common_rows.loc[i,j] = len(pairwise_df.dropna())
-            if ((len(pairwise_df[pairwise_df.isna().any(axis=1)]) == len(pairwise_df))):
+            if ((len(pairwise_df[pairwise_df.isna().any(axis=1)]) == len(pairwise_df)) or len(pairwise_df) < 100):
                 pairwise_corr.loc[i,j] = np.nan
             else:
                 pairwise_corr.loc[i,j] = kd.alpha(pairwise_df.T.values, level_of_measurement="ordinal", value_domain=[0, 1, 2])
@@ -171,7 +171,7 @@ def run_ensemble_evaluation(device):
             avg_score = sum(logits) / len(logits)
             pred_class = avg_score.argmax(dim=1)
             softmax_scores = torch.softmax(avg_score, dim=1)
-
+            entropy = -torch.sum(softmax_scores * torch.log(softmax_scores + 1e-10), dim=1) 
 
             results.append({
                 "block_id": block_id,
@@ -184,7 +184,8 @@ def run_ensemble_evaluation(device):
                 "pred_class": pred_class.item(),
                 "cons_label": cons_labels.item(),
                 "panel_label_selected": panel_label_selected[0] if len(panel_label_selected) > 0 else np.nan,
-                "panel_label_all": panel_label_all[0] if len(panel_label_all) > 0 else np.nan
+                "panel_label_all": panel_label_all[0] if len(panel_label_all) > 0 else np.nan,
+                "entropy": entropy.item()
             })
 
     df = pd.DataFrame(results)
@@ -205,6 +206,8 @@ def calculate_agreement():
             alpha_virtual5 = kd.alpha(df[["panel_label_selected", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
             acc_virtual5 = accuracy_score(df["panel_label_selected"], df["pred_class"])
             alpha_virtual20 = kd.alpha(df[["panel_label_all", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
+            avg_acc = (acc_cons + acc_virtual5 + acc_virtual20) / 3
+            avg_alpha = (alpha_cons + alpha_virtual5 + alpha_virtual20) / 3
 
             results.append(
                 {
@@ -214,7 +217,9 @@ def calculate_agreement():
                     "acc_virtual_20": acc_virtual20,
                     "alpha_consensus": alpha_cons,
                     "alpha_virtual_5": alpha_virtual5,
-                    "alpha_virtual_20": alpha_virtual20
+                    "alpha_virtual_20": alpha_virtual20,
+                    "avg_acc": avg_acc,
+                    "avg_alpha": avg_alpha
                 }
             )
 
@@ -223,7 +228,7 @@ def calculate_agreement():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ensemble Evaluation for MIL Models")
-    parser.add_argument('--experiment_name_base', type=str, required=True, choices=['agg', 'agg_cons'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
+    parser.add_argument('--experiment_name_base', type=str, default="agg", choices=['agg', 'agg_cons'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
     parser.add_argument('--mode', type=str, default="prediction", choices=["prediction", "summary"], ) # <- agg for panel of paths, final_cons for consensus
     parser.add_argument('--features_dir', type=str, default="/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2", help='Directory containing features')
     parser.add_argument('--intra_results_dir', type=str, default='/home/jmgrove/experiments/intra', help='Path to intra results directory')
