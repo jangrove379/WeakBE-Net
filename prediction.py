@@ -1,8 +1,8 @@
-from sklearn.base import accuracy_score
 import torch
 from torch.utils.data import DataLoader, Subset
 from train import MILModel
 from data import BagDataset, process_labels
+from sklearn.metrics import accuracy_score
 import os
 import pandas as pd
 import numpy as np
@@ -48,7 +48,7 @@ def get_panel_labels():
     rater_labels = rater_labels.drop(["p53"], axis=1).replace({1: 0, 2: np.nan, 3: 1, 4: 2, 0: np.nan})
     rater_labels = pd.concat([labels["block_id"], rater_labels], axis=1)
 
-    avg_alpha = get_alpha_scores(args.intra_results_dir, args.intra_results_name)
+    avg_alpha = get_alpha_scores(args.intra_results_dir, args.intra_results_name, args.label_file)
 
     panel_labels = []
     for panel in [path_list, path_list_all]:
@@ -84,7 +84,7 @@ def get_panel_labels():
 
 
 
-def get_alpha_scores(intra_results_dir, intra_results_name):
+def get_alpha_scores(intra_results_dir, intra_results_name, label_file):
     avg_intra_alpha_path = []
     for path in range (1,21):
         alpha_per_fold = []
@@ -97,7 +97,7 @@ def get_alpha_scores(intra_results_dir, intra_results_name):
             alpha_per_fold.append(alpha)
         avg_intra_alpha_path.append(np.mean(alpha_per_fold))
     avg_alpha = pd.DataFrame({"path_id": list(range(1, 21)), "intra": avg_intra_alpha_path})
-    avg_inter_alpha = get_mean_inter_rater_agreement()
+    avg_inter_alpha = get_mean_inter_rater_agreement(label_file)
     avg_alpha["inter"] = avg_inter_alpha
     avg_alpha["overall"] = 0.5*(avg_alpha["inter"] + avg_alpha["intra"])
     avg_alpha.to_csv("experiments/reliability_scores.csv", index=False)
@@ -105,22 +105,25 @@ def get_alpha_scores(intra_results_dir, intra_results_name):
 
 
 
-def get_mean_inter_rater_agreement():
-    data =  pd.read_csv(args.label_file)
+def get_mean_inter_rater_agreement(label_file):
+    data =  pd.read_csv(label_file)
+    data = data.loc[:,"p53":]
+    data = data.drop(["p53"], axis=1).replace({1: 0, 2: np.nan, 3: 1, 4: 2, 0 : np.nan})
+    
     # note: use of lists might be more efficient -> artifact from EDA
     pairwise_corr = pd.DataFrame(np.zeros((20, 20)), index=range(1,21), columns=range(1,21))
     number_of_common_rows = pd.DataFrame(np.zeros((20, 20)), index=range(1,21), columns=range(1,21))
 
     for i in range(1, 21):
         for j in range(1, 21):
-            pairwise_df = data[[f"path_{i}_dx", f"path_{j}_dx"]]
+            pairwise_df = data[[f"path_{i}", f"path_{j}"]]
             number_of_common_rows.loc[i,j] = len(pairwise_df.dropna())
-            if ((len(pairwise_df[pairwise_df.isna().any(axis=1)]) == len(pairwise_df)) or len(pairwise_df < 100)):
+            if ((len(pairwise_df[pairwise_df.isna().any(axis=1)]) == len(pairwise_df))):
                 pairwise_corr.loc[i,j] = np.nan
             else:
-                pairwise_corr.loc[i,j] = kd.alpha(pairwise_df.T.values, level_of_measurement="nominal", value_domain=[np.nan, 1.0, 2.0, 3.0, 4.0])
+                pairwise_corr.loc[i,j] = kd.alpha(pairwise_df.T.values, level_of_measurement="ordinal", value_domain=[0, 1, 2])
 
-    return pairwise_corr.apply(lambda row: row.drop(row.name).mean(), axis=1)
+    return pairwise_corr.apply(lambda row: row.drop(row.name).mean(), axis=1).reset_index(drop=True)
 
 
 
@@ -145,11 +148,7 @@ def run_ensemble_evaluation(device):
     else:
         checkpoint_paths = [f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_fold_{i+1}/best_model.ckpt" for i in range(5)]
 
-    if args.experiment_name_base == "wo1000":
-        output_dir = args.output_dir + "final_eval/"
-    else:
-        output_dir = args.output_dir + "wo1000/"
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     models = load_models(checkpoint_paths, device)
     dataloader = get_dataloader()
     results = []
@@ -161,88 +160,76 @@ def run_ensemble_evaluation(device):
             features = batch["features"].to(device)
             block_id = batch["block_id"][0]
 
-            if args.experiment_name_base != "wo1000":
-                cons_labels = batch["cons_label"]
-                panel_label_selected = panel_labels_selected[panel_labels_selected["block_id"] == block_id]["labels"].values
-                panel_label_all = panel_labels_all[panel_labels_all["block_id"] == block_id]["labels"].values
+            cons_labels = batch["cons_label"]
+            panel_label_selected = panel_labels_selected[panel_labels_selected["block_id"] == block_id]["labels"].values
+            panel_label_all = panel_labels_all[panel_labels_all["block_id"] == block_id]["labels"].values
 
             logits = []
             for model in models:
                 logit = model(features)
-                logits.append(logit)  # Change here to get the predicted class index
+                logits.append(logit) 
             avg_score = sum(logits) / len(logits)
             pred_class = avg_score.argmax(dim=1)
             softmax_scores = torch.softmax(avg_score, dim=1)
 
 
-            if args.experiment_name_base != "wo1000":
-                results.append({
-                    "block_id": block_id,
-                    "pred_score_0": logit[0][0].item(),
-                    "pred_score_1": logit[0][1].item(),
-                    "pred_score_2": logit[0][2].item(),
-                    "softmax_scores_0": softmax_scores[0][0].item(),
-                    "softmax_scores_1": softmax_scores[0][1].item(),
-                    "softmax_scores_2": softmax_scores[0][2].item(),
-                    "pred_class": pred_class.item(),
-                    "cons_label": cons_labels.item(),
-                    "panel_label_selected": panel_label_selected[0] if len(panel_label_selected) > 0 else np.nan,
-                    "panel_label_all": panel_label_all[0] if len(panel_label_all) > 0 else np.nan
-                })
-            else:
-                results.append({
-                    "block_id": block_id,
-                    "pred_score_0": logit[0][0].item(),
-                    "pred_score_1": logit[0][1].item(),
-                    "pred_score_2": logit[0][2].item(),
-                    "softmax_scores_0": softmax_scores[0][0].item(),
-                    "softmax_scores_1": softmax_scores[0][1].item(),
-                    "softmax_scores_2": softmax_scores[0][2].item(),
-                    "pred_class": pred_class.item()
-                })
+            results.append({
+                "block_id": block_id,
+                "pred_score_0": logit[0][0].item(),
+                "pred_score_1": logit[0][1].item(),
+                "pred_score_2": logit[0][2].item(),
+                "softmax_scores_0": softmax_scores[0][0].item(),
+                "softmax_scores_1": softmax_scores[0][1].item(),
+                "softmax_scores_2": softmax_scores[0][2].item(),
+                "pred_class": pred_class.item(),
+                "cons_label": cons_labels.item(),
+                "panel_label_selected": panel_label_selected[0] if len(panel_label_selected) > 0 else np.nan,
+                "panel_label_all": panel_label_all[0] if len(panel_label_all) > 0 else np.nan
+            })
 
     df = pd.DataFrame(results)
     print(df)
-    file_name = os.path.join(output_dir, f"{args.output_name}.csv")
+    file_name = os.path.join(args.output_dir, f"{args.output_name}.csv")
     df.to_csv(file_name, index=False)
     print(f"Saved predictions to {file_name}")
 
 
 def calculate_agreement():
     results = []
-    for experiment in sorted(os.listdir("../../../experiments/final_eval/")):
-        df = pd.read_csv(f"../../../experiments/final_eval/{experiment}")
-        df = df.dropna(subset=["panel_label_selected"]) # just in case there actually are instances not having been rated by a single pathologist in the panel
-        acc_cons = accuracy_score(df["cons_label"], df["pred_class"])
-        acc_virtual20 = accuracy_score(df["panel_label_all"], df["pred_class"])
-        alpha_cons = kd.alpha(df[["cons_label", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
-        alpha_virtual5 = kd.alpha(df[["panel_label_selected", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
-        acc_virtual5 = accuracy_score(df["panel_label_selected"], df["pred_class"])
-        alpha_virtual20 = kd.alpha(df[["panel_label_all", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
+    for experiment in sorted(os.listdir("experiments/final_eval/")):
+            df = pd.read_csv(f"experiments/final_eval/{experiment}")
+            df = df.dropna(subset=["panel_label_selected"]) # just in case there actually are instances not having been rated by a single pathologist in the panel
+            acc_cons = accuracy_score(df["cons_label"], df["pred_class"])
+            acc_virtual20 = accuracy_score(df["panel_label_all"], df["pred_class"])
+            alpha_cons = kd.alpha(df[["cons_label", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
+            alpha_virtual5 = kd.alpha(df[["panel_label_selected", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
+            acc_virtual5 = accuracy_score(df["panel_label_selected"], df["pred_class"])
+            alpha_virtual20 = kd.alpha(df[["panel_label_all", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
 
-        results.append(
-            {
-                "experiment": experiment.replace(".csv", ""),
-                "acc_consensus": acc_cons,
-                "acc_virtual_5": acc_virtual5,
-                "acc_virtual_20": acc_virtual20,
-                "alpha_consensus": alpha_cons,
-                "alpha_virtual_5": alpha_virtual5,
-                "alpha_virtual_20": alpha_virtual20
-            }
-        )
+            results.append(
+                {
+                    "experiment": experiment.replace(".csv", ""),
+                    "acc_consensus": acc_cons,
+                    "acc_virtual_5": acc_virtual5,
+                    "acc_virtual_20": acc_virtual20,
+                    "alpha_consensus": alpha_cons,
+                    "alpha_virtual_5": alpha_virtual5,
+                    "alpha_virtual_20": alpha_virtual20
+                }
+            )
 
-    pd.DataFrame(results).to_csv("../../../experiments/final_eval/summary.csv", index=False)
+    pd.DataFrame(results).to_csv(f"experiments/{args.output_name}.csv", index=False)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ensemble Evaluation for MIL Models")
-    parser.add_argument('--experiment_name_base', type=str, required=True, choices=['agg', 'agg_cons', 'wo1000'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
+    parser.add_argument('--experiment_name_base', type=str, required=True, choices=['agg', 'agg_cons'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
+    parser.add_argument('--mode', type=str, default="prediction", choices=["prediction", "summary"], ) # <- agg for panel of paths, final_cons for consensus
     parser.add_argument('--features_dir', type=str, default="/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2", help='Directory containing features')
     parser.add_argument('--intra_results_dir', type=str, default='/home/jmgrove/experiments/intra', help='Path to intra results directory')
     parser.add_argument('--intra_results_name', type=str, default='evaluation_results_final_intra', help='Start to name of the intra results file')
     parser.add_argument("--label_file", type=str, default='code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv')
-    parser.add_argument('--output_dir', type=str, default='/home/jmgrove/experiments/', help='Directory to save output results')
+    parser.add_argument('--output_dir', type=str, default='/home/jmgrove/experiments/final_eval', help='Directory to save output results')
     parser.add_argument('--output_name', type=str, required=True, help='Name of the output file')
     parser.add_argument('--panel_pathologists', type=str, nargs='+', required=True, help='Pathologist ids of panel')
     parser.add_argument('--train_pathologists', type=str, nargs='+', default=None, help='Pathologist indices for training (only used if experiment_name_base is agg)')
@@ -250,5 +237,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
-    run_ensemble_evaluation(device)
-    calculate_agreement()
+    if args.mode == "prediction":
+        run_ensemble_evaluation(device)
+    else: 
+        calculate_agreement()

@@ -26,49 +26,124 @@ def load_model(checkpoint_path, device):
     return model
 
 
-def run_evaluation(device, output_dir):
-    dataset = BagDataset(args.features_dir, use_p53=True, path_id=args.path_id, label_file=args.label_file, experiment_mode="intra")
-    _, _, _, dataloader, _, _ = next(get_dataloaders(dataset, path=args.path_id, k_folds=5, batch_size=1, experiment_mode="intra"))
+def load_models(checkpoint_paths, device):
+    models = []
+    for path in checkpoint_paths:
+        if not os.path.exists(path):
+            print(f"Checkpoint file {path} does not exist. Skipping.") # <- for path 8 fold 4 and 5
+            continue 
+        model = MILModel.load_from_checkpoint(path,
+            feature_dim=2560,
+            hidden_dim=16,
+            num_classes=3,
+            output_dim=3,
+            lr=1e-5,
+            wd=1e-5,
+            drop_out=0.0,
+            class_weights=None, 
+            diff_weights=None,
+            run_dir=None,
+            strict=False  
+        )
+        model.to(device)
+        model.eval()
+        models.append(model)
+    return models
 
-    for i in range(5):
-        checkpoint_path = f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_Pathologist_{args.path_id}_fold_{i + 1}/best_model.ckpt"
+
+
+def get_dataloader_wo1000():
+    dataset = BagDataset(args.features_dir, use_p53=True, label_file=args.label_file, experiment_mode="final_cons", path_id=None) # <- final_cons so that no filtering is done -> we need the whole set
+    test_idx = [
+        i for i, block_id in enumerate(dataset.block_ids)
+        if 1000 < int(block_id.split("-")[1]) <= 1100
+    ]
+    dataset = Subset(dataset, test_idx)
+
+    return DataLoader(dataset, batch_size=1, shuffle=False)
+
+
+
+def run_evaluation(device, output_dir):
+    if args.experiment_name_base == "wo1000":
+        checkpoint_paths = [f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}v2_intra_Pathologist_{args.path_id}_fold_{i+1}/best_model.ckpt" for i in range(5)]
+        dataloader = get_dataloader_wo1000()
+        models = load_models(checkpoint_paths, device)
+
         os.makedirs(output_dir, exist_ok=True)
-        model = load_model(checkpoint_path, device)
         results = []
         with torch.no_grad():
             for batch in dataloader:
                 features = batch["features"].to(device)
                 block_id = batch["block_id"][0]
-                cons_labels = batch["cons_label"]
-                raters_labels = batch["rater_labels"]
-                target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
 
-                logit = model(features)
-                pred_class = logit.argmax(dim=1)
-                softmax_scores = torch.softmax(logit, dim=1)  
-                softmax_scores = torch.softmax(logit, dim=1)  
-                entropy = -torch.sum(softmax_scores * torch.log(softmax_scores + 1e-10), dim=1) 
+                logits = []
+                for model in models:
+                    logit = model(features)
+                    logits.append(logit)  
+                avg_score = sum(logits) / len(logits)
+                pred_class = avg_score.argmax(dim=1)
+
+
                 results.append({
                     "block_id": block_id,
                     "pred_score_0": logit[0][0].item(),
                     "pred_score_1": logit[0][1].item(),
                     "pred_score_2": logit[0][2].item(),
-                    "pred_class": pred_class.item(),
-                    "label": target.item(),
-                    "softmax_scores_0": softmax_scores[0][0].item(),
-                    "softmax_scores_1": softmax_scores[0][1].item(),
-                    "softmax_scores_2": softmax_scores[0][2].item(),
-                    "entropy": entropy.item(),
-                    "max_softmax_score": softmax_scores.max().item(),
-                    "max_pred_score": logit.max().item(),
-                    "predictive_variance": torch.var(softmax_scores, dim=1).item()
+                    "pred_class": pred_class.item()
                 })
 
         df = pd.DataFrame(results)
         print(df)
-        file_name = os.path.join(output_dir, f"evaluation_results_{args.experiment_name_base}_path_{args.path_id}_fold_{i+1}.csv")
+        file_name = os.path.join(output_dir, f"{args.experiment_name_base}_predictions_path_{args.path_id}.csv")
         df.to_csv(file_name, index=False)
         print(f"Saved predictions to {file_name}")
+    else:
+        dataset = BagDataset(args.features_dir, use_p53=True, path_id=args.path_id, label_file=args.label_file, experiment_mode="intra")
+        _, _, _, dataloader, _, _ = next(get_dataloaders(dataset, path=args.path_id, k_folds=5, batch_size=1, experiment_mode="intra"))
+
+        for i in range(5):
+            checkpoint_path = f"/data/archief/AMC-data/Barrett/experiments/jans_experiments/{args.experiment_name_base}_Pathologist_{args.path_id}_fold_{i + 1}/best_model.ckpt"
+            os.makedirs(output_dir, exist_ok=True)
+
+
+
+            model = load_model(checkpoint_path, device)
+            results = []
+            with torch.no_grad():
+                for batch in dataloader:
+                    features = batch["features"].to(device)
+                    block_id = batch["block_id"][0]
+                    cons_labels = batch["cons_label"]
+                    raters_labels = batch["rater_labels"]
+                    target = process_labels(cons_labels, raters_labels, method='path', add_consensus=False, path_id=args.path_id)
+
+                    logit = model(features)
+                    pred_class = logit.argmax(dim=1)
+                    softmax_scores = torch.softmax(logit, dim=1)  
+                    softmax_scores = torch.softmax(logit, dim=1)  
+                    entropy = -torch.sum(softmax_scores * torch.log(softmax_scores + 1e-10), dim=1) 
+                    results.append({
+                        "block_id": block_id,
+                        "pred_score_0": logit[0][0].item(),
+                        "pred_score_1": logit[0][1].item(),
+                        "pred_score_2": logit[0][2].item(),
+                        "pred_class": pred_class.item(),
+                        "label": target.item(),
+                        "softmax_scores_0": softmax_scores[0][0].item(),
+                        "softmax_scores_1": softmax_scores[0][1].item(),
+                        "softmax_scores_2": softmax_scores[0][2].item(),
+                        "entropy": entropy.item(),
+                        "max_softmax_score": softmax_scores.max().item(),
+                        "max_pred_score": logit.max().item(),
+                        "predictive_variance": torch.var(softmax_scores, dim=1).item()
+                    })
+
+            df = pd.DataFrame(results)
+            print(df)
+            file_name = os.path.join(output_dir, f"evaluation_results_{args.experiment_name_base}_path_{args.path_id}_fold_{i+1}.csv")
+            df.to_csv(file_name, index=False)
+            print(f"Saved predictions to {file_name}")
 
 
 if __name__ == "__main__":
@@ -82,4 +157,4 @@ if __name__ == "__main__":
    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
 
-    run_evaluation(device, args.output_dir, args.experiment_name_base)
+    run_evaluation(device, args.output_dir)
