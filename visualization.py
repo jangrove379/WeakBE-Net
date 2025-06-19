@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 from matplotlib import rcParams
-
+from prediction import get_mean_inter_rater_agreement
 
 def plot_acc():
     df = pd.read_csv('experiments/acc_alpha_summary.csv')
@@ -108,22 +108,67 @@ def plot_avg_acc_label():
     plt.savefig('experiments/figs/avg_acc_by_agg_strategy.png')
 
 
-def plot_reliability():
+def plot_reliability(label_file):
     df = pd.read_csv('experiments/reliability_scores.csv')
-    df.rename(columns={'intra': 'Inter-Rater Reliability', 'inter': 'Inter-Rater Reliability', 'overall': 'Average Reliability'}, inplace=True)
-    fig, ax = plt.subplots()
-    bars = df.iloc[:,1:].plot(kind='bar', width=0.4, edgecolor='black', ax=ax)
-
-    # plt.title('Mean Pairwise Agreement for max-aggregated Diagnoses')
-    # plt.ylabel("Mean Pairwise Agreement (Krippendorff's Alpha)")
-    plt.xlabel("Pathologists")
-    plt.xticks(ticks=np.arange(0,20), labels=[f'{i}' for i in range(1,21)], rotation=0)
+    df.rename(columns={'intra': 'Intra-Rater Reliability', 'inter': 'Inter-Rater Reliability', 'overall': 'Overall Reliability'}, inplace=True)
+    
+    plt.figure()
+    total_samples_list = []
+    for i in range(1,21):
+        test_samples = pd.read_csv(f"experiments/intra/evaluation_results_final_intra_path_{i}_fold_1.csv")
+        total_samples = len(test_samples) * 1 / 0.2
+        total_samples_list.append(total_samples)
+    total_samples_array = np.array(total_samples_list)
+    print(total_samples_array)
+    colors = plt.cm.Greys(total_samples_array / np.max(total_samples_array)) 
+    plt.bar(df.index, df['Intra-Rater Reliability'], color=colors, edgecolor='black')  
+    plt.title('Intra-Rater Reliability')
+    plt.ylabel("Krippendorff's alpha")
     plt.ylim(0, 1)
-    plt.savefig('experiments/figs/reliability.png')
+    plt.xlabel("Pathologists")
+    plt.xticks(ticks=np.arange(0, len(df)), labels=[f'{i}' for i in range(1, len(df) + 1)], rotation=0)
+    plt.grid(axis='y')  # Added horizontal grid
+    plt.tight_layout()
+    
+    # Color bar for training samples
+    sm = plt.cm.ScalarMappable(cmap='Greys', norm=plt.Normalize(vmin=0, vmax=np.max(total_samples_array)))
+    sm.set_array([])  
+    cbar = plt.colorbar(sm)
+    cbar.set_label('Number of Total Samples')
+    
+    plt.savefig('experiments/figs/intra.png')
 
-# def plot_self_vs_consensus():
+
+    plt.figure()
+    mean_common_samples = get_mean_inter_rater_agreement(label_file, common_samples=True)
+    colors = plt.cm.Greys(mean_common_samples / np.max(mean_common_samples))  
+    bars = plt.bar(df.index, df['Inter-Rater Reliability'], color=colors, edgecolor='black')
+    plt.title('Mean Pairwise Inter-Rater Reliability')
+    plt.ylabel("Krippendorff's alpha")
+    plt.ylim(0, 1)
+    plt.xlabel("Pathologists")
+    plt.xticks(ticks=np.arange(0, len(df)), labels=[f'{i}' for i in range(1, len(df) + 1)], rotation=0)
+    plt.grid(axis='y')  # Added horizontal grid
+    plt.tight_layout()
+    
+    sm = plt.cm.ScalarMappable(cmap='Greys', norm=plt.Normalize(vmin=0, vmax=np.max(mean_common_samples)))
+    sm.set_array([])  
+    cbar = plt.colorbar(sm)
+    cbar.set_label('Mean Common Samples')
+    
+    plt.savefig('experiments/figs/inter.png')
 
 
+    plt.figure()
+    plt.bar(df.index, df['Overall Reliability'], color='grey', edgecolor='black')
+    plt.title('Overall Reliability')
+    plt.ylabel("Mean Krippendorff's alpha")
+    plt.ylim(0, 1)
+    plt.xlabel("Pathologists")
+    plt.xticks(ticks=np.arange(0, len(df)), labels=[f'{i}' for i in range(1, len(df) + 1)], rotation=0)
+    plt.grid(axis='y')  # Added horizontal grid
+    plt.tight_layout()
+    plt.savefig('experiments/figs/overall.png')
 
 
 def setup_plots():
@@ -149,10 +194,13 @@ def setup_plots():
 
 
 if __name__ == "__main__":
+    label_file = 'code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv'
+
+
     setup_plots()
     plot_acc()
     plot_alpha()
     plot_avg()
     plot_avg_acc_panel()
     plot_avg_acc_label()
-    plot_reliability()
+    plot_reliability(label_file)

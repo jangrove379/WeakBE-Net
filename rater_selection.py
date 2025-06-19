@@ -45,21 +45,22 @@ def get_clusters(preds, viable_pathologists):
     pca = PCA(n_components=2)
     pca_coords = pca.fit_transform(preds_transposed)
 
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(7*0.66,7*0.66))
     plt.scatter(pca_coords[:, 0], pca_coords[:, 1], c=labels, cmap='tab10', s=100)
     plt.title('PCA of Predictions Colored by Cluster')
     plt.xlabel('PCA Component 1')
     plt.ylabel('PCA Component 2')
+    
+    plt.xlim(-5.5, 5.5)
+    plt.ylim(-5.5, 5.5)
 
     for i, paths in enumerate(viable_pathologists):
-        plt.text(pca_coords[i, 0], pca_coords[i, 1], str(paths), fontsize=9)
+        plt.text(pca_coords[i, 0], pca_coords[i, 1], str(paths))
     os.makedirs("experiments/figs", exist_ok=True)
     save_path = 'experiments/figs/predictions_clusters_pca.png'
     plt.savefig(save_path)
 
     return labels
-
-
 
 
 

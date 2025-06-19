@@ -105,7 +105,7 @@ def get_alpha_scores(intra_results_dir, intra_results_name, label_file):
 
 
 
-def get_mean_inter_rater_agreement(label_file):
+def get_mean_inter_rater_agreement(label_file, common_samples=False):
     data =  pd.read_csv(label_file)
     data = data.loc[:,"p53":]
     data = data.drop(["p53"], axis=1).replace({1: 0, 2: np.nan, 3: 1, 4: 2, 0 : np.nan})
@@ -122,6 +122,9 @@ def get_mean_inter_rater_agreement(label_file):
                 pairwise_corr.loc[i,j] = np.nan
             else:
                 pairwise_corr.loc[i,j] = kd.alpha(pairwise_df.T.values, level_of_measurement="ordinal", value_domain=[0, 1, 2])
+
+    if common_samples:
+        return number_of_common_rows.apply(lambda row: row.drop(row.name).mean(), axis=1).reset_index(drop=True)
 
     return pairwise_corr.apply(lambda row: row.drop(row.name).mean(), axis=1).reset_index(drop=True)
 
@@ -173,6 +176,9 @@ def run_ensemble_evaluation(device):
             softmax_scores = torch.softmax(avg_score, dim=1)
             entropy = -torch.sum(softmax_scores * torch.log(softmax_scores + 1e-10), dim=1) 
 
+            if len(panel_label_selected) == 0:
+                print("Warning: No panel label found for block_id:", block_id)
+
             results.append({
                 "block_id": block_id,
                 "pred_score_0": logit[0][0].item(),
@@ -195,41 +201,11 @@ def run_ensemble_evaluation(device):
     print(f"Saved predictions to {file_name}")
 
 
-def calculate_agreement():
-    results = []
-    for experiment in sorted(os.listdir("experiments/final_eval/")):
-            df = pd.read_csv(f"experiments/final_eval/{experiment}")
-            df = df.dropna(subset=["panel_label_selected"]) # just in case there actually are instances not having been rated by a single pathologist in the panel
-            acc_cons = accuracy_score(df["cons_label"], df["pred_class"])
-            acc_virtual20 = accuracy_score(df["panel_label_all"], df["pred_class"])
-            alpha_cons = kd.alpha(df[["cons_label", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
-            alpha_virtual5 = kd.alpha(df[["panel_label_selected", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
-            acc_virtual5 = accuracy_score(df["panel_label_selected"], df["pred_class"])
-            alpha_virtual20 = kd.alpha(df[["panel_label_all", "pred_class"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
-            avg_acc = (acc_cons + acc_virtual5 + acc_virtual20) / 3
-            avg_alpha = (alpha_cons + alpha_virtual5 + alpha_virtual20) / 3
-
-            results.append(
-                {
-                    "experiment": experiment.replace(".csv", ""),
-                    "acc_consensus": acc_cons,
-                    "acc_virtual_5": acc_virtual5,
-                    "acc_virtual_20": acc_virtual20,
-                    "alpha_consensus": alpha_cons,
-                    "alpha_virtual_5": alpha_virtual5,
-                    "alpha_virtual_20": alpha_virtual20,
-                    "avg_acc": avg_acc,
-                    "avg_alpha": avg_alpha
-                }
-            )
-
-    pd.DataFrame(results).to_csv(f"experiments/{args.output_name}.csv", index=False)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ensemble Evaluation for MIL Models")
     parser.add_argument('--experiment_name_base', type=str, default="agg", choices=['agg', 'agg_cons'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
-    parser.add_argument('--mode', type=str, default="prediction", choices=["prediction", "summary"], ) # <- agg for panel of paths, final_cons for consensus
     parser.add_argument('--features_dir', type=str, default="/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2", help='Directory containing features')
     parser.add_argument('--intra_results_dir', type=str, default='/home/jmgrove/experiments/intra', help='Path to intra results directory')
     parser.add_argument('--intra_results_name', type=str, default='evaluation_results_final_intra', help='Start to name of the intra results file')
@@ -242,7 +218,4 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     
-    if args.mode == "prediction":
-        run_ensemble_evaluation(device)
-    else: 
-        calculate_agreement()
+    run_ensemble_evaluation(device)
