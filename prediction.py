@@ -168,13 +168,19 @@ def run_ensemble_evaluation(device):
             panel_label_all = panel_labels_all[panel_labels_all["block_id"] == block_id]["labels"].values
 
             logits = []
+            frequency_classes_prediction = [0] * 3
             for model in models:
                 logit = model(features)
-                logits.append(logit) 
+                logits.append(logit)
+                pred_class_temp = logit.argmax(dim=1)
+                frequency_classes_prediction[pred_class_temp.item()] += 1 
+            pred_class_majority = torch.tensor(frequency_classes_prediction).argmax().item()
+            normalized_frequency_classes_prediction = np.array(frequency_classes_prediction) / len(models)
             avg_score = sum(logits) / len(logits)
             pred_class = avg_score.argmax(dim=1)
             softmax_scores = torch.softmax(avg_score, dim=1)
             entropy = -torch.sum(softmax_scores * torch.log(softmax_scores + 1e-10), dim=1) 
+            frequency_entropy = -torch.sum(torch.tensor(normalized_frequency_classes_prediction) * torch.log(torch.tensor(normalized_frequency_classes_prediction) + 1e-10))
 
             if len(panel_label_selected) == 0:
                 print("Warning: No panel label found for block_id:", block_id)
@@ -191,7 +197,15 @@ def run_ensemble_evaluation(device):
                 "cons_label": cons_labels.item(),
                 "panel_label_selected": panel_label_selected[0] if len(panel_label_selected) > 0 else np.nan,
                 "panel_label_all": panel_label_all[0] if len(panel_label_all) > 0 else np.nan,
-                "entropy": entropy.item()
+                "entropy": entropy.item(),
+                "frequency_classes_prediction_0": frequency_classes_prediction[0] if len(frequency_classes_prediction) > 0 else 0,
+                "frequency_classes_prediction_1": frequency_classes_prediction[1] if len(frequency_classes_prediction) > 1 else 0,
+                "frequency_classes_prediction_2": frequency_classes_prediction[2] if len(frequency_classes_prediction) > 2 else 0,
+                "normalized_frequency_classes_prediction_0": normalized_frequency_classes_prediction[0] if len(normalized_frequency_classes_prediction) > 0 else 0,
+                "normalized_frequency_classes_prediction_1": normalized_frequency_classes_prediction[1] if len(normalized_frequency_classes_prediction) > 1 else 0,
+                "normalized_frequency_classes_prediction_2": normalized_frequency_classes_prediction[2] if len(normalized_frequency_classes_prediction) > 2 else 0,
+                "pred_class_majority": pred_class_majority,
+                "frequency_entropy": frequency_entropy.item() if len(frequency_classes_prediction) > 0 else 0
             })
 
     df = pd.DataFrame(results)
