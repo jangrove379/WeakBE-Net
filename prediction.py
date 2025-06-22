@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from train import MILModel
 from data import BagDataset, process_labels
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, f1_score
 import os
 import pandas as pd
 import numpy as np
@@ -86,21 +86,29 @@ def get_panel_labels():
 
 def get_alpha_scores(intra_results_dir, intra_results_name, label_file):
     avg_intra_alpha_path = []
+    avg_intra_f1_path = []
     for path in range (1,21):
         alpha_per_fold = []
+        f1_per_fold = []
         for fold in range(1,6):
             try:
                 df = pd.read_csv(f"{intra_results_dir}/{intra_results_name}_path_{path}_fold_{fold}.csv")
             except FileNotFoundError:
                 raise FileNotFoundError(f"{intra_results_dir}/{intra_results_name}_{path}_fold_{fold}.csv not available. If you haven't, run intra_evaluation.py first!")
             alpha = kd.alpha(df[["pred_class", "label"]].T.values, level_of_measurement="ordinal", value_domain=[0, 1.0, 2.0])
+            f1 = f1_score(df["label"], df["pred_class"], average="macro")
             alpha_per_fold.append(alpha)
+            f1_per_fold.append(f1)
         avg_intra_alpha_path.append(np.mean(alpha_per_fold))
+        avg_intra_f1_path.append(np.mean(f1_per_fold))
     avg_alpha = pd.DataFrame({"path_id": list(range(1, 21)), "intra": avg_intra_alpha_path})
     avg_inter_alpha = get_mean_inter_rater_agreement(label_file)
     avg_alpha["inter"] = avg_inter_alpha
     avg_alpha["overall"] = 0.5*(avg_alpha["inter"] + avg_alpha["intra"])
     avg_alpha.to_csv("experiments/reliability_scores.csv", index=False)
+    avg_f1 = pd.DataFrame({"path_id": list(range(1,21)), "intra_f1": avg_intra_f1_path})
+    avg_f1.to_csv("experiments/intra_f1.csv", index=False)
+    
     return avg_alpha
 
 
