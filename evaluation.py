@@ -28,7 +28,7 @@ def remove_nans():
 
 
 
-def bootstrap_all_metrics(df, num_iterations=1000, alpha=0.05):
+def bootstrap_all_metrics(df, num_iterations=2000, alpha=0.05):
     n = len(df)
     metrics = {
         "acc_cons": [], "acc_v5": [], "acc_v20": [],
@@ -205,7 +205,7 @@ def calculate_agreement():
 def plot_acc_all_thresholds():
     setup_plots()
     result_per_threshold = []
-    for entropy_threshold in np.arange(0.15, 1.05, 0.05):
+    for entropy_threshold in np.arange(0, 1.05, 0.05):
         entropy_threshold_condition = entropy_threshold + 0.06  # as small value added to softmax to prevent log(0)
         results_threshold_per_experiment = []
         for experiment in sorted(os.listdir("experiments/final_eval/")):
@@ -347,61 +347,46 @@ def plot_difference_increase_to_cons():
     plt.savefig("experiments/figs/f1_diff_to_cons.png")
 
 
-def plot_ece():
-    df = pd.read_csv("experiments/final_eval/virtual_20_cluster_2_13_14_15_16.csv")
-    bins = []
-    bin_width = 0.05
-    for i_class in [0, 1, 2]:
-        for softmax_score in np.arange(0, 1.01, bin_width):
-            df_class = df[
-                (df[f"softmax_scores_{i_class}"] > softmax_score - bin_width) &
-                (df[f"softmax_scores_{i_class}"] <= softmax_score)  
-                # (df["cons_label"] == i_class)
-            ]
-            acc_cons = accuracy_score(df_class["cons_label"], df_class["pred_class"])
-            acc_virtual20 = accuracy_score(df_class["panel_label_all"], df_class["pred_class"])
-            acc_virtual5 = accuracy_score(df_class["panel_label_selected"], df_class["pred_class"])
-            acc_avg = (acc_cons + acc_virtual5 + acc_virtual20) / 3
-            bins.append(
-                {
-                    "confidence": softmax_score,
-                    "acc_consensus": acc_cons,
-                    "acc_virtual_5": acc_virtual5,
-                    "acc_virtual_20": acc_virtual20,
-                    "avg_acc": acc_avg,
-                    "class": i_class,
-                    "length": len(df_class)
-                }
-            )
-    bins = pd.DataFrame(bins)
-    print(bins)
-    bins.to_csv("experiments/acc_bins.csv", index=False)
+def plot_multiclass_ece(bin_width=0.1, label_col="cons_label"):
+    df = pd.read_csv('experiments/final_eval/virtual_20_cluster_2_13_14_15_16.csv')
+    preds = df[["softmax_scores_0", "softmax_scores_1", "softmax_scores_2"]].values
+    confidences = preds.max(axis=1)
+    predictions = preds.argmax(axis=1)
+    true_labels = df[label_col].values
+    correct = (predictions == true_labels).astype(int)
 
-    for class_id in [0, 1, 2]:
-        class_df = bins[bins["class"] == class_id]
+    bin_edges = np.arange(0, 1.0001, bin_width)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    acc_per_bin = []
+    conf_per_bin = []
+    counts = []
 
-        plt.figure()
-        plt.bar(
-            class_df["confidence"],
-            class_df["avg_acc"],
-            width=0.04,
-            edgecolor="black",
-            color="lightblue",
-            alpha=0.7,
-            label="Average Accuracy\n(all three test sets)"
-        )
-        plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label="Perfect Calibration")
+    for low, high in zip(bin_edges[:-1], bin_edges[1:]):
+        mask = (confidences > low) & (confidences <= high)
+        if np.sum(mask) > 0:
+            acc = np.mean(correct[mask])
+            conf = np.mean(confidences[mask])
+            acc_per_bin.append(acc)
+            conf_per_bin.append(conf)
+            counts.append(np.sum(mask))
+        else:
+            acc_per_bin.append(0)
+            conf_per_bin.append(0)
+            counts.append(0)
 
-        plt.xlabel("Confidence (softmax score)")
-        plt.ylabel("Average Accuracy\n(all three test sets)")
-        plt.title(f"Calibration for Class {class_id}")
-        plt.xlim(0, 1)
-        plt.ylim(0, 1)
-        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(f"experiments/figs/plot_ece_class_{class_id}.png")
-        plt.close()
+    # Plot
+    plt.figure()
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Calibration')
+    plt.bar(bin_centers, acc_per_bin, width=bin_width * 0.9, alpha=0.7, edgecolor='black', label='Empirical Accuracy')
+    # plt.plot(bin_centers, conf_per_bin, 'o-', color='black', label='Avg Confidence')
+    plt.xlabel("Confidence")
+    plt.ylabel("Accuracy")
+    plt.title(f"Top-label Calibration (label: {label_col})")
+    plt.ylim(0, 1)
+    plt.grid(True, linestyle="--", linewidth=0.5)
+    plt.legend()
+    plt.savefig("experiments/figs/multiclass_ece.png")
+    plt.close()
 
 
 
@@ -414,5 +399,5 @@ if __name__ == "__main__":
     # calculate_agreement()
     plot_acc_all_thresholds()
     plot_difference_increase_to_cons()
-    plot_ece()
+    plot_multiclass_ece()
        
