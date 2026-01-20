@@ -129,18 +129,17 @@ def plot_reliability(label_file):
     index = np.arange(len(df))
     plt.bar(index, df['Intra-Rater Reliability'], color=colors, label='Intra-Rater Reliability')
     plt.bar(index, df_intra_f1['Intra-Rater F1-Score'], color="r", edgecolor='black', linewidth=1, fill=False, label='Intra-Rater F1-Score', alpha=1)
-
+    df['Total Samples'] = total_samples_array
+    df['f1'] = df_intra_f1['Intra-Rater F1-Score']
 
     plt.title('Intra-Rater Reliability and F1-Score')
-    plt.ylabel("Krippendorff's alpha")
+    plt.ylabel("Krippendorff's alpha/F1-Score")
     plt.ylim(0, 1)
     plt.xlabel("Pathologists")
     plt.xticks(ticks=index, labels=[f'{i}' for i in range(1, len(df) + 1)], rotation=0)
-    plt.grid(axis='y')  # Added horizontal grid
+    plt.grid(axis='y')  
     plt.tight_layout()
     plt.legend()
-    
-    # Color bar for training samples
     sm = plt.cm.ScalarMappable(cmap='Blues', norm=plt.Normalize(vmin=0, vmax=np.max(total_samples_array)))
     sm.set_array([])  
     cbar = plt.colorbar(sm)
@@ -153,19 +152,19 @@ def plot_reliability(label_file):
     mean_common_samples = get_mean_inter_rater_agreement(label_file, common_samples=True)
     colors = plt.cm.Blues(mean_common_samples / np.max(mean_common_samples))  
     bars = plt.bar(df.index, df['Inter-Rater Reliability'], color=colors, edgecolor='black')
+    df['Mean Common Samples'] = mean_common_samples
+    df.to_csv('experiments/reliability_scores_with_samples.csv', index=False)
     plt.title('Mean Pairwise Inter-Rater Reliability')
-    plt.ylabel("Krippendorff's alpha/F1-Score")
+    plt.ylabel("Krippendorff's alpha")
     plt.ylim(0, 1)
     plt.xlabel("Pathologists")
     plt.xticks(ticks=np.arange(0, len(df)), labels=[f'{i}' for i in range(1, len(df) + 1)], rotation=0)
-    plt.grid(axis='y')  # Added horizontal grid
+    plt.grid(axis='y')  
     plt.tight_layout()
-    
     sm = plt.cm.ScalarMappable(cmap='Blues', norm=plt.Normalize(vmin=0, vmax=np.max(mean_common_samples)))
     sm.set_array([])  
     cbar = plt.colorbar(sm)
     cbar.set_label('Mean Common Samples')
-    
     plt.savefig('experiments/figs/inter.png')
 
 

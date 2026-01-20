@@ -148,6 +148,15 @@ def get_dataloader():
 
     return DataLoader(dataset, batch_size=1, shuffle=False)
 
+def calculate_percentage_agreement_mode(row):
+    freq_preds = [row['frequency_classes_prediction_0'], row['frequency_classes_prediction_1'], row['frequency_classes_prediction_2']]
+    print("freq_preds", freq_preds)
+    mode = np.argmax(freq_preds) 
+    print("mode", str(mode))
+    total_freq = sum(freq_preds)
+    percentage_agreement_mode = freq_preds[mode] / total_freq * 100 if total_freq != 0 else 0
+    
+    return percentage_agreement_mode
 
 
 def run_ensemble_evaluation(device):
@@ -217,6 +226,7 @@ def run_ensemble_evaluation(device):
             })
 
     df = pd.DataFrame(results)
+    df['percentage_agreement_mode'] = df.apply(calculate_percentage_agreement_mode, axis=1)
     print(df)
     file_name = os.path.join(args.output_dir, f"{args.output_name}.csv")
     df.to_csv(file_name, index=False)

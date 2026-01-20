@@ -403,7 +403,7 @@ if __name__ == '__main__':
     parser.add_argument("--exp_dir", type=str,
                         default='/data/archief/AMC-data/Barrett/experiments/jans_experiments')   
     parser.add_argument("--features_dir", type=str,
-                        default='/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2')
+                        default='/data/archief/AMC-data/Barrett/LANS_features/old_stuff/Virchow_HE_P53_1mpp_v2')
     parser.add_argument("--label_file", type=str,
                         default='code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv')
     parser.add_argument("--wandb_key", type=str, help="key for logging to weights and biases")
