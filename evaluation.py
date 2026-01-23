@@ -14,17 +14,18 @@ from visualization import setup_plots
 
 def remove_nans():
     nas = []  
-    for experiment in sorted(os.listdir("experiments/final_eval/")):
-        df = pd.read_csv(f"experiments/final_eval/{experiment}")
+    
+    for experiment in sorted(os.listdir(args.experiment_dir)):
+        df = pd.read_csv(f"{args.experiment_dir}/{experiment}")
         nas.append(df[df["panel_label_selected"].isna()]["block_id"].values.tolist())
     flat_nas = [item for sublist in nas for item in sublist]
     remove = pd.Series(flat_nas).unique()
 
-    for experiment in sorted(os.listdir("experiments/final_eval/")):
-            df = pd.read_csv(f"experiments/final_eval/{experiment}")
+    for experiment in sorted(os.listdir(args.experiment_dir)):
+            df = pd.read_csv(f"{args.experiment_dir}/{experiment}")
             df = df[~df["block_id"].isin(remove)]
             print(f"Removed {len(remove)} instances from {experiment} due to NaN values in panel_label_selected.")
-            df.to_csv(f"experiments/final_eval/{experiment}", index=False)
+            df.to_csv(f"{args.experiment_dir}/{experiment}", index=False)
 
 
 
@@ -69,9 +70,9 @@ def bootstrap_all_metrics(df, num_iterations=2000, alpha=0.05):
 def calculate_agreement():
     results = []
 
-    for experiment in sorted(os.listdir("experiments/final_eval/")):
+    for experiment in sorted(os.listdir(args.experiment_dir)):
         print(f"Processing {experiment}...")
-        df = pd.read_csv(f"experiments/final_eval/{experiment}")
+        df = pd.read_csv(f"{args.experiment_dir}/{experiment}")
         experiment = experiment.replace("virtual_", "virtual")
 
         summary = bootstrap_all_metrics(df)
@@ -112,7 +113,7 @@ def calculate_agreement():
             }
         )
 
-    pd.DataFrame(results).round(4).to_csv("experiments/acc_alpha_summary.csv", index=False)
+    pd.DataFrame(results).round(4).to_csv(f"{args.experiment_dir}/acc_alpha_summary.csv", index=False)
 
 
 # def calculate_agreement_certain(entropy_threshold):
@@ -209,8 +210,8 @@ def plot_acc_all_thresholds():
     for entropy_threshold in np.arange(0, 1.05, 0.05):
         entropy_threshold_condition = entropy_threshold + 0.06  # as small value added to softmax to prevent log(0)
         results_threshold_per_experiment = []
-        for experiment in sorted(os.listdir("experiments/final_eval/")):
-            df = pd.read_csv(f"experiments/final_eval/{experiment}")
+        for experiment in sorted(os.listdir(args.experiment_dir)):
+            df = pd.read_csv(f"{args.experiment_dir}/{experiment}")
             experiment = experiment.replace("virtual_", "virtual")
             df = df.dropna(subset=["panel_label_selected"])  # just in case there actually are instances not having been rated by a single pathologist in the panel
             overall_length = len(df)
@@ -242,7 +243,7 @@ def plot_acc_all_thresholds():
                 }
             )
         results_threshold_per_experiment = pd.DataFrame(results_threshold_per_experiment)
-        results_threshold_per_experiment.to_csv(f"experiments/certain_{round(entropy_threshold, 2)}_f1_summary.csv", index=False)
+        results_threshold_per_experiment.to_csv(f"{args.experiment_dir}/certain_{round(entropy_threshold, 2)}_f1_summary.csv", index=False)
 
         for plot_cond in ["virtual5", "virtual20", "consensus"]:
             avg_f1 = np.mean(results_threshold_per_experiment.loc[results_threshold_per_experiment["experiment"].str.contains(plot_cond), "avg_f1"])
@@ -298,18 +299,18 @@ def plot_acc_all_thresholds():
     lines2, labels2 = ax2.get_legend_handles_labels() 
     ax2.legend(lines + lines2, labels + labels2, loc='upper left') 
     
-    plt.savefig("experiments/figs/avg_f1_all_thresholds.png")
-    result_per_threshold.to_csv(f"experiments/avg_f1_all_thresholds.csv", index=False)
+    plt.savefig(f"{args.experiment_dir}/figs/avg_f1_all_thresholds.png")
+    result_per_threshold.to_csv(f"{args.experiment_dir}/avg_f1_all_thresholds.csv", index=False)
 
 def plot_difference_increase_to_cons():
     setup_plots()
     results = []
-    baseline_df = pd.read_csv("experiments/acc_alpha_summary.csv")
+    baseline_df = pd.read_csv(f"{args.experiment_dir}/acc_alpha_summary.csv")
     baseline_f1 = baseline_df.groupby("model_strat")["avg_f1"].mean()
 
     for entropy_threshold in np.arange(0.15, 1.05, 0.05):
         entropy_threshold = round(entropy_threshold, 2)
-        entropy_df = pd.read_csv(f"experiments/certain_{entropy_threshold}_f1_summary.csv")
+        entropy_df = pd.read_csv(f"{args.experiment_dir}/certain_{entropy_threshold}_f1_summary.csv")
         entropy_f1 = entropy_df.groupby("model_strat")["avg_f1"].mean()
 
         diff = entropy_f1 - baseline_f1
@@ -343,7 +344,7 @@ def plot_difference_increase_to_cons():
     plt.legend(title="Model Strategy")
     plt.tight_layout()
     plt.grid(True, axis='y')
-    plt.savefig("experiments/figs/f1_diff_to_cons.png")
+    plt.savefig(f"{args.experiment_dir}/figs/f1_diff_to_cons.png")
 
 
 def plot_multiclass_ece(bin_width=0.1, label_col="cons_label", conf_base="softmax"):
@@ -352,7 +353,7 @@ def plot_multiclass_ece(bin_width=0.1, label_col="cons_label", conf_base="softma
     all_results = []
 
     for experiment in best_experiments:
-        df = pd.read_csv(f'experiments/final_eval/{experiment}.csv')
+        df = pd.read_csv(f"{args.experiment_dir}/{experiment}.csv")
         preds = df[["softmax_scores_0", "softmax_scores_1", "softmax_scores_2"]].values
         
         if conf_base == "softmax":    
@@ -415,7 +416,7 @@ def plot_multiclass_ece(bin_width=0.1, label_col="cons_label", conf_base="softma
     plt.grid(True, linestyle="--", linewidth=0.5)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("experiments/figs/multiclass_ece.png")
+    plt.savefig(f"{args.experiment_dir}/figs/multiclass_ece.png")
     plt.close()
 
         # plt.figure()
@@ -445,7 +446,7 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
     }
 
     for experiment in best_experiments:
-        df = pd.read_csv(f'experiments/final_eval/{experiment}.csv')
+        df = pd.read_csv(f'{args.experiment_dir}/{experiment}.csv')
         preds = df[["softmax_scores_0", "softmax_scores_1", "softmax_scores_2"]].values
 
         if conf_base == "softmax":
@@ -519,7 +520,8 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
         plt.grid(True, linestyle="--", linewidth=0.5)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f"experiments/figs/multiclass_ece_{experiment}.png")
+        os.makedirs(f"{args.experiment_dir}/figs", exist_ok=True)
+        plt.savefig(f"{args.experiment_dir}/figs/multiclass_ece_{experiment}.png")
         plt.close()
 
 
@@ -527,6 +529,7 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate agreement metrics for model predictions.")
     parser.add_argument("--entropy_threshold", type=float, default=1, help="Threshold for filtering uncertain predictions.")
+    parser.add_argument("--experiment_dir", type=str, default="experiments/final_eval", help="Folder containing experiment CSV files.")
     args = parser.parse_args()
 
     # remove_nans()

@@ -198,6 +198,15 @@ class BagDataset:
         print('{} of which {} have p53 features available'.format(len(self.block_ids), sum(self.p53_file_available)))
         print('Using p53 features: {}'.format(self.use_p53))
 
+
+    def get_num_raters(self):
+        """Return the number of raters (pathologists) in the dataset."""
+        # Number of rater columns = total columns - (block_id + dx + p53)
+        rater_start = self.labels.columns.get_loc("p53") + 1
+        num_raters = len(self.labels.columns) - rater_start
+        return num_raters
+
+
     def update_consensus_labels(self, include_ind=False):
         """
                         include_ind=False   include_ind=True
@@ -346,7 +355,6 @@ class EvalDataset(Dataset):
         return self.samples[idx]
 
 
-
 def get_class_weights(dataset):
     """
     Computes class weights for handling imbalanced datasets.
@@ -363,6 +371,7 @@ def get_class_weights(dataset):
                                  dtype=torch.float)
 
     return class_weights
+
 
 
 def process_labels(cons_labels, rater_labels, method="random", add_consensus=False, path_id=None):
@@ -451,7 +460,7 @@ def get_dataloaders(dataset, k_folds=5, batch_size=32, seed=42, test_size=0.2, p
     else:
         test_idx = [
             i for i, block_id in enumerate(dataset.block_ids)
-            if 1000 < int(block_id.split("-")[1]) <= 1100
+            if 1000 < int(block_id.split("-")[1])
         ]
         
         # test_subset = Subset(dataset, test_idx) 

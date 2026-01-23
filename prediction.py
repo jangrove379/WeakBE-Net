@@ -142,7 +142,7 @@ def get_dataloader():
     dataset = BagDataset(args.features_dir, use_p53=True, label_file=args.label_file, experiment_mode="final_cons", path_id=None) # <- final_cons so that no filtering is done -> we need the whole set
     test_idx = [
         i for i, block_id in enumerate(dataset.block_ids)
-        if 1000 < int(block_id.split("-")[1]) <= 1100
+        if 1000 < int(block_id.split("-")[1])
     ]
     dataset = Subset(dataset, test_idx)
 
@@ -204,9 +204,9 @@ def run_ensemble_evaluation(device):
 
             results.append({
                 "block_id": block_id,
-                "pred_score_0": logit[0][0].item(),
-                "pred_score_1": logit[0][1].item(),
-                "pred_score_2": logit[0][2].item(),
+                "pred_score_0": avg_score[0][0].item(),
+                "pred_score_1": avg_score[0][1].item(),
+                "pred_score_2": avg_score[0][2].item(),
                 "softmax_scores_0": softmax_scores[0][0].item(),
                 "softmax_scores_1": softmax_scores[0][1].item(),
                 "softmax_scores_2": softmax_scores[0][2].item(),
@@ -231,7 +231,6 @@ def run_ensemble_evaluation(device):
     file_name = os.path.join(args.output_dir, f"{args.output_name}.csv")
     df.to_csv(file_name, index=False)
     print(f"Saved predictions to {file_name}")
-
 
 
 

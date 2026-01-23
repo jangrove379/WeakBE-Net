@@ -60,12 +60,13 @@ def train(args):
     best_acc_scores = []
 
     print('Running {} folds total'.format(args.k_folds))
-    for fold, train_loader, val_loader, _, class_weights, difficulty_weights in get_dataloaders(dataset,
-                                                                         k_folds=args.k_folds,
-                                                                         batch_size=args.batch_size,
-                                                                         seed=args.seed,
-                                                                         path=args.path_id, 
-                                                                         experiment_mode=args.experiment_mode):
+    for fold, train_loader, val_loader, _, class_weights, difficulty_weights in get_dataloaders(
+        dataset,
+        k_folds=args.k_folds,
+        batch_size=args.batch_size,
+        seed=args.seed,
+        path=args.path_id, 
+        experiment_mode=args.experiment_mode):
         fold_dir = os.path.join(args.exp_dir, '{}_fold_{}'.format(args.run_name, fold))
         os.makedirs(fold_dir, exist_ok=True)
 
