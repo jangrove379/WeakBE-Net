@@ -22,16 +22,16 @@ python intra_evaluation.py --path_id <PATHOLOGIST_ID>
 ### Rater Selection
 The script rater_selection.py identifies the best-performing pathologists based on intra-rater and inter-rater reliability, using both cluster-based and overall-best strategies.
 
-Predictions
+### Predictions
 Predictions are generated using prediction.py:
 
-Consensus model:
+#### Consensus model:
 ```bash
 python prediction.py --experiment_name "agg_cons" --output_name <OUTPUT> --panel_pathologists <PATH_IDS>
 ```
 
 
-Ensemble models:
+#### Ensemble models:
 ```bash
 python prediction.py --experiment_name "agg" --output_name <OUTPUT> --panel_pathologists <PATH_IDS> --train_pathologists <PATH_IDS>
 ```
