@@ -6,15 +6,17 @@ This repository provides code for predicting dysplasia grade from whole-slide im
 ### Training Individual Models
 Each pathologist model is trained independently using train.py.
 Example command:
-
+```bash
 python train.py --experiment_mode intra1000 --path_id <PATHOLOGIST_ID>
+```
 
 
 ### Intra-Rater Evaluation
 After training, intra_evaluation.py is run for each pathologist to compute intra-rater agreement and derive scores for rater selection.
 Example command:
-
+```bash
 python intra_evaluation.py --path_id <PATHOLOGIST_ID>
+```
 
 
 ### Rater Selection
@@ -24,16 +26,17 @@ Predictions
 Predictions are generated using prediction.py:
 
 Consensus model:
-
+```bash
 python prediction.py --experiment_name "agg_cons" --output_name <OUTPUT> --panel_pathologists <PATH_IDS>
+```
 
 
 Ensemble models:
-
+```bash
 python prediction.py --experiment_name "agg" --output_name <OUTPUT> --panel_pathologists <PATH_IDS> --train_pathologists <PATH_IDS>
+```
 
-
-Here, --panel_pathologists specifies the evaluation panel, while --train_pathologists determines the training panel (from 1 to 20 pathologists or a selected subset).
+Here, --panel_pathologists specifies the evaluation panel, while --train_pathologists determines the training panel (a selected subset or all 20 pathologists).
 
 ### Performance Evaluation
 Metrics for accuracy and uncertainty calibration are computed with evaluation.py.
