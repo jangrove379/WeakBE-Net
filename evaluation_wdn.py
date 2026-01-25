@@ -425,7 +425,7 @@ def calculate_agreement():
         # plt.close()
 
 def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_base="softmax"):
-       
+    setup_plots()
     colors = {
         "dn": "tab:green",
         "wdn": "tab:blue",
@@ -496,7 +496,7 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
     plt.xlabel("Confidence")
     plt.xlim(0.3, 1)
     plt.ylabel("Accuracy")
-    plt.title(f"Confidence Calibration {label}")
+    plt.title(f"Confidence Calibration {label}, ECE: {ece:.3f}")
     plt.ylim(0, 1)
     plt.grid(True, linestyle="--", linewidth=0.5)
     plt.legend()

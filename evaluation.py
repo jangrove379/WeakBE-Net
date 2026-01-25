@@ -426,13 +426,14 @@ def plot_multiclass_ece(bin_width=0.1, label_col="cons_label", conf_base="softma
         # plt.xlabel("Confidence")
         # plt.ylabel("Accuracy")
         # plt.title(f"Top-label Calibration (label: {label_col})")
-        # plt.ylim(0, 1)
+        # plt.ylim(0, 1)s
         # plt.grid(True, linestyle="--", linewidth=0.5)
         # plt.legend()
         # plt.savefig("experiments/figs/multiclass_ece.png")
         # plt.close()
 
 def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_base="softmax"):
+    setup_plots()
     best_experiments = [
         "virtual_20_cluster_2_13_14_15_16",
         "virtual_5_cluster_2_13_14_15_16",
@@ -448,6 +449,7 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
     for experiment in best_experiments:
         df = pd.read_csv(f'{args.experiment_dir}/{experiment}.csv')
         preds = df[["softmax_scores_0", "softmax_scores_1", "softmax_scores_2"]].values
+        df["percentage_agreement_mode"] = df["percentage_agreement_mode"] / 100
 
         if conf_base == "softmax":
             confidences = preds.max(axis=1)
@@ -515,7 +517,7 @@ def plot_multiclass_ece_separate(bin_width=0.1, label_col="cons_label", conf_bas
         plt.xlabel("Confidence")
         plt.xlim(0.3, 1)
         plt.ylabel("Accuracy")
-        plt.title(f"Confidence Calibration {label}")
+        plt.title(f"Confidence Calibration {label}, ECE: {ece:.3f}")
         plt.ylim(0, 1)
         plt.grid(True, linestyle="--", linewidth=0.5)
         plt.legend()

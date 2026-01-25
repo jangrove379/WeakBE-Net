@@ -8,6 +8,8 @@ import pandas as pd
 import numpy as np
 import krippendorff as kd
 import argparse
+import time
+
 
 
 def load_models(checkpoint_paths, device):
@@ -175,6 +177,9 @@ def run_ensemble_evaluation(device):
     if args.experiment_name_base != "wo1000":
         panel_labels_selected, panel_labels_all = get_panel_labels()
 
+    inference_times_single = []
+    inference_times_ensemble = []
+
     with torch.no_grad():
         for batch in dataloader:
             features = batch["features"].to(device)
@@ -186,11 +191,28 @@ def run_ensemble_evaluation(device):
 
             logits = []
             frequency_classes_prediction = [0] * 3
+
+            # timing single network inference
+            torch.cuda.synchronize()
+            start_single = time.perf_counter()
+            logit_single = models[0](features)
+            torch.cuda.synchronize()
+            end_single = time.perf_counter()
+            inference_times_single.append(end_single - start_single)
+
+            # timing ensemble inference
+            torch.cuda.synchronize()
+            start_ensemble = time.perf_counter()
             for model in models:
                 logit = model(features)
                 logits.append(logit)
                 pred_class_temp = logit.argmax(dim=1)
-                frequency_classes_prediction[pred_class_temp.item()] += 1 
+                frequency_classes_prediction[pred_class_temp.item()] += 1
+            torch.cuda.synchronize()
+            end_ensemble = time.perf_counter()
+
+            inference_times_ensemble.append(end_ensemble - start_ensemble + (end_single - start_single))
+
             pred_class_majority = torch.tensor(frequency_classes_prediction).argmax().item()
             normalized_frequency_classes_prediction = np.array(frequency_classes_prediction) / len(models)
             avg_score = sum(logits) / len(logits)
@@ -222,7 +244,9 @@ def run_ensemble_evaluation(device):
                 "normalized_frequency_classes_prediction_1": normalized_frequency_classes_prediction[1] if len(normalized_frequency_classes_prediction) > 1 else 0,
                 "normalized_frequency_classes_prediction_2": normalized_frequency_classes_prediction[2] if len(normalized_frequency_classes_prediction) > 2 else 0,
                 "pred_class_majority": pred_class_majority,
-                "frequency_entropy": frequency_entropy.item() if len(frequency_classes_prediction) > 0 else 0
+                "frequency_entropy": frequency_entropy.item() if len(frequency_classes_prediction) > 0 else 0,
+                "inference_times_ensemble": np.mean(inference_times_ensemble),
+                "inference_times_single": np.mean(inference_times_single)
             })
 
     df = pd.DataFrame(results)
@@ -237,7 +261,7 @@ def run_ensemble_evaluation(device):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ensemble Evaluation for MIL Models")
     parser.add_argument('--experiment_name_base', type=str, default="agg", choices=['agg', 'agg_cons'], help='Base name for the experiment') # <- agg for panel of paths, final_cons for consensus
-    parser.add_argument('--features_dir', type=str, default="/data/archief/AMC-data/Barrett/LANS_features/Virchow_HE_P53_1mpp_v2", help='Directory containing features')
+    parser.add_argument("--features_dir", type=str, default='/data/archief/AMC-data/Barrett/LANS_features/old_stuff/Virchow_HE_P53_1mpp_v2')
     parser.add_argument('--intra_results_dir', type=str, default='/home/jmgrove/experiments/intra', help='Path to intra results directory')
     parser.add_argument('--intra_results_name', type=str, default='evaluation_results_final_intra', help='Start to name of the intra results file')
     parser.add_argument("--label_file", type=str, default='code/WeakBE-Net/notebooks/EDA/data/lans_all_labels.csv')
