@@ -23,7 +23,7 @@ This script is run in a matter of seconds to a minute per pathologist.
 Usage of loops as part of bash-scripts is advised.
 Example command:
 ```bash
-python intra_evaluation.py --path_id <PATHOLOGIST_ID>
+python intra_prediction.py --path_id <PATHOLOGIST_ID>
 ```
 
 
