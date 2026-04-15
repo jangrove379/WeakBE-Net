@@ -39,14 +39,14 @@ Runtime per execution is limited to a few seconds.
 ```bash
 python prediction.py --experiment_name "agg_cons" --output_name <OUTPUT> --panel_pathologists <PATH_IDS>
 ```
-
+Example input for --panel_pathologists: 1 2 3 4 5.
 
 #### Ensemble models:
 ```bash
 python prediction.py --experiment_name "agg" --output_name <OUTPUT> --panel_pathologists <PATH_IDS> --train_pathologists <PATH_IDS>
 ```
 
-Here, --panel_pathologists specifies the evaluation panel, while --train_pathologists determines the training panel (a selected subset or all 20 pathologists).
+Here, --panel_pathologists specifies the evaluation panel (example input: 1 2 3 4 5), while --train_pathologists determines the training panel (a selected subset or all 20 pathologists).
 
 ### Performance Evaluation
 Metrics for accuracy and uncertainty calibration are computed with evaluation.py.
